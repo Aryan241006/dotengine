@@ -9,7 +9,7 @@
                              /____/                 
 ```
 
-**Dotengine** is a resilient, AI-powered desktop configuration and self-healing agent CLI for Hyprland. Built in Rust utilizing Clean/Hexagonal Architecture, it allows users to dynamically generate, apply, and auto-correct visual desktop environments in real time using state-of-the-art generative language models.
+**Dotengine** is an AI-powered desktop configuration and self-healing agent CLI for Hyprland. Built in Rust utilizing Clean/Hexagonal Architecture, it allows users to dynamically generate, apply, and auto-correct visual desktop environments in real time using state-of-the-art generative language models.
 
 ---
 
@@ -45,7 +45,7 @@ Dotengine uses LLMs to interpret natural language, analyze design mockup screens
 
 ### Supported Models
 You can choose between two primary AI providers directly from the CLI:
-*   **Google Gemini (Recommended)**: Utilizes models like `gemini-1.5-pro` or `gemini-1.5-flash` for high-speed, multimodal layout synthesis.
+*   **Gemini**: Utilizes `gemini-3.5-flash` for high-speed, multimodal layout synthesis.
 *   **OpenAI**: Supports `gpt-4o` and `gpt-4o-mini` for highly reliable code generation and text reasoning.
 
 ### Keys Setup

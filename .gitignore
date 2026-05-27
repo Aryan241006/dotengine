@@ -1,0 +1,20 @@
+# Rust Build Artifacts
+/target/
+
+# Sensitive Credentials & Keys
+.env
+.env.*
+!*.example
+credentials.json
+.config/dotengine/credentials.json
+
+# Local IDE and Tool Caches
+.vscode/
+.idea/
+.codex/
+.agents/
+*.log
+
+# Operating System Specific
+.DS_Store
+Thumbs.db

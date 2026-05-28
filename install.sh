@@ -47,11 +47,12 @@ esac
 
 # Fetch the latest release tag from GitHub Releases API
 echo -e "\x1b[38;2;137;180;250mℹ Fetching latest release info from GitHub...\x1b[0m"
-RELEASE_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K[^"]*')
+RELEASE_TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep -Po '"tag_name": "\K[^"]*' || echo "")
 
 if [ -z "$RELEASE_TAG" ]; then
   echo -e "\x1b[38;2;243;139;168m✖ Error: No stable releases found in GitHub repository '$REPO'.\x1b[0m"
-  echo "Please check if your repository is public and has at least one drafted release tag."
+  echo "Please check if your repository is public and has at least one published release."
+  echo "To publish a release, go to https://github.com/$REPO/releases/new and create a release for tag v1.0.0."
   exit 1
 fi
 

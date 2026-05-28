@@ -22,6 +22,12 @@ pub struct SystemContext {
 
     /// The native package manager available for the detected distribution (e.g. "pacman", "apt")
     pub package_manager: Option<String>,
+
+    /// Detected Hyprland version string (e.g. "0.55.1")
+    pub hyprland_version: Option<String>,
+
+    /// Whether Hyprland uses Lua configuration (true for 0.55+)
+    pub hyprland_uses_lua: Option<bool>,
 }
 
 impl SystemContext {
@@ -31,7 +37,15 @@ impl SystemContext {
             monitors: Vec::new(),
             package_status: HashMap::new(),
             package_manager,
+            hyprland_version: None,
+            hyprland_uses_lua: None,
         }
+    }
+
+    pub fn with_hyprland_version(mut self, version: String, uses_lua: bool) -> Self {
+        self.hyprland_version = Some(version);
+        self.hyprland_uses_lua = Some(uses_lua);
+        self
     }
 
     pub fn with_monitor(mut self, monitor: MonitorInfo) -> Self {

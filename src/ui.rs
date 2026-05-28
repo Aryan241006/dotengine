@@ -8,16 +8,15 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 pub const RESET: &str = "\x1b[0m";
-pub const INDIGO: &str = "\x1b[38;2;129;140;248m";
-pub const BLUE: &str = "\x1b[38;2;125;207;255m";
-pub const SOFT_BLUE: &str = "\x1b[38;2;137;180;250m";
+pub const OLIVE: &str = "\x1b[38;2;120;138;62m";
+pub const DARK_OLIVE: &str = "\x1b[38;2;85;102;40m";
 
 pub fn accent(text: &str) -> String {
-    format!("{INDIGO}{text}{RESET}")
+    format!("{OLIVE}{text}{RESET}")
 }
 
 pub fn heading(text: &str) -> String {
-    format!("\x1b[1;38;2;137;180;250m{text}{RESET}")
+    format!("\x1b[1;38;2;120;138;62m{text}{RESET}")
 }
 
 pub fn success(text: &str) -> String {
@@ -25,7 +24,7 @@ pub fn success(text: &str) -> String {
 }
 
 pub fn info(text: &str) -> String {
-    format!("\x1b[38;2;137;180;250mℹ {text}{RESET}")
+    format!("\x1b[38;2;120;138;62mℹ {text}{RESET}")
 }
 
 pub fn warning(text: &str) -> String {
@@ -37,31 +36,7 @@ pub fn error(text: &str) -> String {
 }
 
 pub fn print_wordmark() {
-    let logo = r#"
-      ____        __                  _             
-     / __ \____  / /____  ____  ____ _(_)___  ___   
-    / / / / __ \/ __/ _ \/ __ \/ __ `/ / __ \/ _ \  
-   / /_/ / /_/ / /_/  __/ / / / /_/ / / / / /  __/  
-  /_____/\____/\__/\___/_/ /_/\__, /_/_/ /_/\___/   
-                             /____/                 
-    "#;
-
-    println!();
-    let colors = [
-        "\x1b[38;2;196;113;245m", // Deep Purple
-        "\x1b[38;2;141;106;248m", // Violet
-        "\x1b[38;2;86;108;250m",  // Indigo-Blue
-        "\x1b[38;2;31;143;253m",  // Blue
-        "\x1b[38;2;6;182;212m",   // Cyan
-        "\x1b[38;2;20;184;166m",  // Teal
-    ];
-    
-    for (line, color) in logo.lines().zip(colors.iter().cycle()) {
-        if !line.trim().is_empty() {
-            println!("  {color}{line}{RESET}");
-        }
-    }
-    println!();
+    println!("\n  \x1b[1;38;2;120;138;62m⚡ dotengine\x1b[0m \x1b[38;2;85;102;40m| hyprland ai agent\x1b[0m\n");
 }
 
 struct ActivityIndicator {
@@ -86,7 +61,7 @@ impl ActivityIndicator {
             let frames = [".  ", ".. ", "...", "   "];
             while task_running.load(Ordering::Relaxed) {
                 eprint!(
-                    "\r\x1b[2K\x1b[38;2;129;140;248mDotengine\x1b[0m {} \x1b[38;2;137;180;250m{}{RESET}",
+                    "\r\x1b[2K\x1b[38;2;120;138;62mDotengine\x1b[0m {} \x1b[38;2;85;102;40m{}{RESET}",
                     message,
                     frames[frame_index]
                 );

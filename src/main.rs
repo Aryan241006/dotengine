@@ -4,14 +4,15 @@ use dotengine::composer::compose;
 use dotengine::domain::{DesignTemplate, ImagePayload};
 use dotengine::infrastructure::{AiProvider, CredentialStore, GeminiClient, HyprSys, OpenaiClient};
 use dotengine::ports::{AiService, SystemManager};
-use dotengine::ui::{accent, heading, print_wordmark, success, info, warning, error};
+use dotengine::ui::{accent, heading, success, info, warning, error, activity};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "dotengine")]
 #[command(author = "Aryan <aryan@dotengine.ai>")]
-#[command(version = "1.0")]
+#[command(version)]
 #[command(about = "Hyprland AI Configuration & Self-Healing Agent CLI", long_about = None)]
 struct Args {
     /// Natural language prompt describing desired desktop aesthetic (e.g. 'nord themed minimal')
@@ -107,6 +108,168 @@ fn heuristic_stack_for_prompt(prompt: &str, template_idx: Option<usize>) -> (Str
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptIntent {
+    Edit,
+    Redesign,
+}
+
+#[derive(Default, Debug, Clone)]
+struct StackDetection {
+    panel: Option<String>,
+    launcher: Option<String>,
+    wallpaper: Option<String>,
+    lockscreen: Option<String>,
+    notification: Option<String>,
+    has_any: bool,
+}
+
+#[derive(Default, Debug, Clone)]
+struct StackOverride {
+    panel: Option<String>,
+    launcher: Option<String>,
+    wallpaper: Option<String>,
+    lockscreen: Option<String>,
+    notification: Option<String>,
+}
+
+fn prompt_suggests_redesign(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let keywords = [
+        "redesign",
+        "overhaul",
+        "completely different",
+        "from scratch",
+        "fresh",
+        "new theme",
+        "replace everything",
+        "full redesign",
+    ];
+    keywords.iter().any(|kw| lower.contains(kw))
+}
+
+fn prompt_mentions_keybinds(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let keywords = ["keybind", "key binding", "shortcut", "hotkey", "bind =", "binds"];
+    keywords.iter().any(|kw| lower.contains(kw))
+}
+
+fn prompt_mentions_wallpaper(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let keywords = ["wallpaper", "background", "wall paper", "swww", "hyprpaper"];
+    keywords.iter().any(|kw| lower.contains(kw))
+}
+
+fn prompt_mentions_lockscreen(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let keywords = ["lockscreen", "lock screen", "hyprlock", "swaylock", "waylock"];
+    keywords.iter().any(|kw| lower.contains(kw))
+}
+
+fn classify_intent(prompt: &str, has_existing_setup: bool) -> PromptIntent {
+    if prompt_suggests_redesign(prompt) {
+        PromptIntent::Redesign
+    } else if has_existing_setup {
+        PromptIntent::Edit
+    } else {
+        PromptIntent::Redesign
+    }
+}
+
+fn stack_override_from_prompt(prompt: &str) -> StackOverride {
+    let lower = prompt.to_lowercase();
+    let mut override_stack = StackOverride::default();
+
+    if lower.contains("waybar") {
+        override_stack.panel = Some("waybar".to_string());
+    } else if lower.contains("ags") || lower.contains("aylur") {
+        override_stack.panel = Some("ags".to_string());
+    } else if lower.contains("quick-shell") || lower.contains("quickshell") {
+        override_stack.panel = Some("quick-shell".to_string());
+    } else if lower.contains("no panel") || lower.contains("without panel") {
+        override_stack.panel = Some("none".to_string());
+    }
+
+    if lower.contains("rofi") {
+        override_stack.launcher = Some("rofi".to_string());
+    } else if lower.contains("no launcher") || lower.contains("without launcher") {
+        override_stack.launcher = Some("none".to_string());
+    }
+
+    if lower.contains("hyprpaper") {
+        override_stack.wallpaper = Some("hyprpaper".to_string());
+    } else if lower.contains("no wallpaper") || lower.contains("without wallpaper") {
+        override_stack.wallpaper = Some("none".to_string());
+    }
+
+    if lower.contains("hyprlock") {
+        override_stack.lockscreen = Some("hyprlock".to_string());
+    } else if lower.contains("swaylock") {
+        override_stack.lockscreen = Some("swaylock".to_string());
+    } else if lower.contains("waylock") {
+        override_stack.lockscreen = Some("waylock".to_string());
+    } else if lower.contains("no lockscreen") || lower.contains("without lockscreen") {
+        override_stack.lockscreen = Some("none".to_string());
+    }
+
+    if lower.contains("swaync") {
+        override_stack.notification = Some("swaync".to_string());
+    } else if lower.contains("dunst") {
+        override_stack.notification = Some("dunst".to_string());
+    } else if lower.contains("no notification") || lower.contains("without notifications") {
+        override_stack.notification = Some("none".to_string());
+    }
+
+    override_stack
+}
+
+fn detect_existing_stack(home_dir: &Path) -> StackDetection {
+    let mut detection = StackDetection::default();
+    let has = |path: &str| home_dir.join(path).exists();
+
+    if has(".config/waybar") {
+        detection.panel = Some("waybar".to_string());
+        detection.has_any = true;
+    } else if has(".config/ags") {
+        detection.panel = Some("ags".to_string());
+        detection.has_any = true;
+    } else if has(".config/quickshell") || has(".config/quick-shell") {
+        detection.panel = Some("quick-shell".to_string());
+        detection.has_any = true;
+    }
+
+    if has(".config/rofi") {
+        detection.launcher = Some("rofi".to_string());
+        detection.has_any = true;
+    }
+
+    if has(".config/hypr/hyprpaper.conf") {
+        detection.wallpaper = Some("hyprpaper".to_string());
+        detection.has_any = true;
+    }
+
+    if has(".config/hypr/hyprlock.conf") {
+        detection.lockscreen = Some("hyprlock".to_string());
+        detection.has_any = true;
+    } else if has(".config/swaylock/config") {
+        detection.lockscreen = Some("swaylock".to_string());
+        detection.has_any = true;
+    } else if has(".config/waylock/config") {
+        detection.lockscreen = Some("waylock".to_string());
+        detection.has_any = true;
+    }
+
+    if has(".config/swaync") {
+        detection.notification = Some("swaync".to_string());
+        detection.has_any = true;
+    } else if has(".config/dunst") {
+        detection.notification = Some("dunst".to_string());
+        detection.has_any = true;
+    }
+
+    detection
+}
+
 async fn perform_pre_run_backup(home_dir: &Path) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
     let hypr_config = home_dir.join(".config/hypr");
     if !hypr_config.exists() {
@@ -172,12 +335,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Enable logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    print_wordmark();
-
     let args = Args::parse();
 
     // 1. Initialize Ports & Infrastructure System Manager
     let system_manager: Arc<dyn SystemManager> = Arc::new(HyprSys::new());
+    let home_dir = system_manager.get_home_directory();
+    let existing_stack = detect_existing_stack(&home_dir);
+    let has_existing_setup = existing_stack.has_any;
+    let is_new_user = !has_existing_setup;
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
     // Perform pre-run backup if an existing setup is detected
     let _ = perform_pre_run_backup(&system_manager.get_home_directory()).await;
@@ -210,52 +376,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         String::new()
     };
 
-    let combined_rules = if skill_content.is_empty() {
+    let mut combined_rules = if skill_content.is_empty() {
         design_rules
     } else {
-        format!("{}\n\n=== TECHNICAL CONFIGURATION SYNTAX AND CAPABILITIES ===\n{}", design_rules, skill_content)
+        format!(
+            "{}\n\n=== TECHNICAL CONFIGURATION SYNTAX AND CAPABILITIES ===\n{}",
+            design_rules, skill_content
+        )
     };
 
     // 4. Handle Design Template Selection
-    let predefined_templates = DesignTemplate::get_predefined_library();
     let use_composer = args.prompt.is_none();
-    let mut selected_template = args.template;
+    let selected_template = args.template;
     let mut raw_prompt = args.prompt;
     let mut image_payloads = Vec::new();
 
-    if raw_prompt.is_none() && selected_template.is_none() {
-        println!(
-            "{} Choose a starting design profile:",
-            heading("Welcome to Dotengine.")
-        );
-        for (i, t) in predefined_templates.iter().enumerate() {
-            println!("  [{}] {} - {}", i, t.name, t.description);
-        }
-        println!(
-            "  [{}] Custom Prompt (Define your own from scratch)",
-            predefined_templates.len()
-        );
-
-        print!("\nEnter choice [0-{}]: ", predefined_templates.len());
-        use std::io::Write;
-        std::io::stdout().flush()?;
-
-        let mut choice_input = String::new();
-        std::io::stdin().read_line(&mut choice_input)?;
-        let choice: usize = choice_input
-            .trim()
-            .parse()
-            .unwrap_or(predefined_templates.len());
-
-        if choice < predefined_templates.len() {
-            selected_template = Some(choice);
-            raw_prompt = Some(format!(
-                "Apply layout settings matching {}",
-                predefined_templates[choice].name
-            ));
-        } else {
-            raw_prompt = Some(String::new());
-        }
+    if raw_prompt.is_none() {
+        raw_prompt = Some(String::new());
     }
 
     let mut rofi_bind = args.rofi_bind;
@@ -295,6 +432,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let composition = compose(
             raw_prompt.unwrap_or_else(|| "Nord minimalist desktop".to_string()),
             image_payloads,
+            env!("CARGO_PKG_VERSION").to_string(),
+            provider.display_name().to_string(),
         )?;
         image_payloads = composition.images;
         composition.instruction
@@ -302,18 +441,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         raw_prompt.unwrap()
     };
 
-    // 6. Dynamic stack recommendation based on resolved prompt
-    let (rec_panel, rec_launcher, rec_wallpaper, rec_lockscreen, rec_notification) = heuristic_stack_for_prompt(&final_prompt, selected_template);
+    let system_context = activity(
+        "Inspecting operating environment",
+        system_manager.detect_system_context(),
+    )
+    .await?;
+    println!(
+        "{} Detected system context successfully.",
+        accent("Dotengine")
+    );
+    println!("    Distro: {}", system_context.distribution);
+    println!(
+        "    Package Manager: {}",
+        system_context
+            .package_manager
+            .as_deref()
+            .unwrap_or("unsupported or unavailable")
+    );
+    println!("    Active Monitors: {}", system_context.monitors.len());
+    for m in &system_context.monitors {
+        println!(
+            "      - {} ({}x{} @ {}Hz, scale: {})",
+            m.name, m.width, m.height, m.refresh_rate, m.scale
+        );
+    }
 
-    let mut panel_value = args.panel.clone().unwrap_or(rec_panel);
-    let mut launcher_value = args.launcher.clone().unwrap_or(rec_launcher);
-    let mut wallpaper_value = wallpaper_util.unwrap_or(rec_wallpaper);
-    let mut lockscreen_value = lockscreen_util.unwrap_or(rec_lockscreen);
-    let mut notification_value = notification_util.unwrap_or(rec_notification);
+
+
+    // 6. Determine intent and stack selection
+    let intent = classify_intent(&final_prompt, has_existing_setup);
+    let prompt_override = stack_override_from_prompt(&final_prompt);
+    let (rec_panel, rec_launcher, rec_wallpaper, rec_lockscreen, rec_notification) =
+        heuristic_stack_for_prompt(&final_prompt, selected_template);
+
+    let panel_value = args
+        .panel
+        .clone()
+        .or(prompt_override.panel)
+        .or(existing_stack.panel)
+        .unwrap_or(rec_panel);
+    let launcher_value = args
+        .launcher
+        .clone()
+        .or(prompt_override.launcher)
+        .or(existing_stack.launcher)
+        .unwrap_or(rec_launcher);
+    let wallpaper_value = wallpaper_util
+        .or(prompt_override.wallpaper)
+        .or(existing_stack.wallpaper)
+        .unwrap_or(rec_wallpaper);
+    let lockscreen_value = lockscreen_util
+        .or(prompt_override.lockscreen)
+        .or(existing_stack.lockscreen)
+        .unwrap_or(rec_lockscreen);
+    let notification_value = notification_util
+        .or(prompt_override.notification)
+        .or(existing_stack.notification)
+        .unwrap_or(rec_notification);
     let mut nm_applet_value = args.nm_applet;
     let mut blueman_value = args.blueman;
 
-    if use_composer && args.panel.is_none() && args.launcher.is_none() && args.wallpaper.is_none() && args.lockscreen.is_none() && args.notification.is_none() {
+    if use_composer && is_new_user && args.panel.is_none() && args.launcher.is_none() {
         println!("\n{} Recommended desktop component stack for your design style:", accent("Dotengine"));
         println!("  - Panel/Shell:        {}", panel_value);
         println!("  - App Launcher:       {}", launcher_value);
@@ -322,114 +510,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("  - Notification Panel: {}", notification_value);
         println!("  - Network Tray Icon:  {}", if nm_applet_value { "enabled" } else { "disabled (recommended: enable)" });
         println!("  - Bluetooth Tray Icon:{}", if blueman_value { "enabled" } else { "disabled (recommended: enable)" });
-
-        print!("\nWould you like to customize this stack? [y/N]: ");
-        use std::io::Write;
-        std::io::stdout().flush()?;
-        let mut cust_input = String::new();
-        std::io::stdin().read_line(&mut cust_input)?;
-        let choice = cust_input.trim().to_lowercase();
-        if choice == "y" || choice == "yes" {
-            // Customize Panel
-            println!("\nChoose Panel/Shell:");
-            println!("  [1] ags (recommended for Glassmorphic Glow)");
-            println!("  [2] waybar (recommended for Nordic Minimalist)");
-            println!("  [3] quick-shell");
-            println!("  [4] none");
-            print!("Enter choice [1-4, default: {}]: ", panel_value);
-            std::io::stdout().flush()?;
-            let mut panel_input = String::new();
-            std::io::stdin().read_line(&mut panel_input)?;
-            panel_value = match panel_input.trim() {
-                "1" => "ags".to_string(),
-                "2" => "waybar".to_string(),
-                "3" => "quick-shell".to_string(),
-                "4" => "none".to_string(),
-                _ => panel_value,
-            };
-
-            // Customize Launcher
-            println!("\nChoose App Launcher:");
-            println!("  [1] rofi");
-            println!("  [2] none");
-            print!("Enter choice [1-2, default: {}]: ", launcher_value);
-            std::io::stdout().flush()?;
-            let mut launcher_input = String::new();
-            std::io::stdin().read_line(&mut launcher_input)?;
-            launcher_value = match launcher_input.trim() {
-                "1" => "rofi".to_string(),
-                "2" => "none".to_string(),
-                _ => launcher_value,
-            };
-
-            // Customize Wallpaper
-            println!("\nChoose Wallpaper utility:");
-            println!("  [1] hyprpaper");
-            println!("  [2] none");
-            print!("Enter choice [1-2, default: {}]: ", wallpaper_value);
-            std::io::stdout().flush()?;
-            let mut wallpaper_input = String::new();
-            std::io::stdin().read_line(&mut wallpaper_input)?;
-            wallpaper_value = match wallpaper_input.trim() {
-                "1" => "hyprpaper".to_string(),
-                "2" => "none".to_string(),
-                _ => wallpaper_value,
-            };
-
-            // Customize Lockscreen
-            println!("\nChoose Lockscreen utility:");
-            println!("  [1] hyprlock");
-            println!("  [2] swaylock");
-            println!("  [3] waylock");
-            println!("  [4] none");
-            print!("Enter choice [1-4, default: {}]: ", lockscreen_value);
-            std::io::stdout().flush()?;
-            let mut lockscreen_input = String::new();
-            std::io::stdin().read_line(&mut lockscreen_input)?;
-            lockscreen_value = match lockscreen_input.trim() {
-                "1" => "hyprlock".to_string(),
-                "2" => "swaylock".to_string(),
-                "3" => "waylock".to_string(),
-                "4" => "none".to_string(),
-                _ => lockscreen_value,
-            };
-
-            // Customize Notification Center
-            println!("\nChoose Notification Center:");
-            println!("  [1] swaync (Sway Notification Center)");
-            println!("  [2] dunst");
-            println!("  [3] none");
-            print!("Enter choice [1-3, default: {}]: ", notification_value);
-            std::io::stdout().flush()?;
-            let mut notif_input = String::new();
-            std::io::stdin().read_line(&mut notif_input)?;
-            notification_value = match notif_input.trim() {
-                "1" => "swaync".to_string(),
-                "2" => "dunst".to_string(),
-                "3" => "none".to_string(),
-                _ => notification_value,
-            };
-
-            // Customize Applets
-            print!("\nEnable Network Manager tray applet (nm-applet)? [Y/n]: ");
-            std::io::stdout().flush()?;
-            let mut nm_input = String::new();
-            std::io::stdin().read_line(&mut nm_input)?;
-            nm_applet_value = !matches!(nm_input.trim().to_lowercase().as_str(), "n" | "no");
-
-            print!("Enable Bluetooth connection tray applet (blueman)? [Y/n]: ");
-            std::io::stdout().flush()?;
-            let mut blue_input = String::new();
-            std::io::stdin().read_line(&mut blue_input)?;
-            blueman_value = !matches!(blue_input.trim().to_lowercase().as_str(), "n" | "no");
-        } else {
-            // Suggest enabling applets if they are currently disabled in default non-interactive
-            nm_applet_value = true;
-            blueman_value = true;
-        }
+        nm_applet_value = true;
+        blueman_value = true;
+    } else if use_composer && !is_new_user {
+        println!(
+            "\n{} Detected existing desktop setup. Using current stack defaults unless your prompt overrides them.",
+            accent("Dotengine")
+        );
     }
 
-    if rofi_bind.is_none() && launcher_value == "rofi" && use_composer {
+    let wants_keybind_change = prompt_mentions_keybinds(&final_prompt);
+    let should_prompt_rofi_bind = launcher_value == "rofi"
+        && rofi_bind.is_none()
+        && interactive
+        && (is_new_user || intent == PromptIntent::Redesign || wants_keybind_change);
+
+    if should_prompt_rofi_bind {
         print!("\nEnter preferred Rofi launch shortcut [default: SUPER, D]: ");
         use std::io::Write;
         std::io::stdout().flush()?;
@@ -442,10 +538,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             trimmed.to_string()
         });
     }
-    let rofi_bind_value = rofi_bind.unwrap_or_else(|| "SUPER, D".to_string());
+    let rofi_bind_value = if rofi_bind.is_some() {
+        rofi_bind
+    } else if launcher_value == "rofi" && is_new_user && interactive {
+        Some("SUPER, D".to_string())
+    } else {
+        None
+    };
 
     let mut wallpaper_prompt_val = args.wallpaper_prompt.clone().unwrap_or_default();
-    if wallpaper_prompt_val.is_empty() && wallpaper_value != "none" && use_composer {
+    let wants_wallpaper = prompt_mentions_wallpaper(&final_prompt);
+    if wallpaper_prompt_val.is_empty()
+        && wallpaper_value != "none"
+        && use_composer
+        && interactive
+        && (is_new_user || wants_wallpaper)
+    {
         print!("\nDescribe how the wallpaper should look (e.g. 'purple sunset minimalist mountains', or press enter for default): ");
         use std::io::Write;
         std::io::stdout().flush()?;
@@ -455,13 +563,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut lockscreen_prompt_val = args.lockscreen_prompt.clone().unwrap_or_default();
-    if lockscreen_prompt_val.is_empty() && lockscreen_value != "none" && use_composer {
+    let wants_lockscreen = prompt_mentions_lockscreen(&final_prompt);
+    if lockscreen_prompt_val.is_empty()
+        && lockscreen_value != "none"
+        && use_composer
+        && interactive
+        && (is_new_user || wants_lockscreen)
+    {
         print!("\nDescribe how the lockscreen should look (e.g. 'frosted glass centered login, analog clock', or press enter for default): ");
         use std::io::Write;
         std::io::stdout().flush()?;
         let mut lock_prompt_input = String::new();
         std::io::stdin().read_line(&mut lock_prompt_input)?;
         lockscreen_prompt_val = lock_prompt_input.trim().to_string();
+    }
+
+    // Hyprland version instructions
+    let mut hyprland_version_note = String::new();
+    if interactive {
+        if let Some((version, uses_lua)) = system_context
+            .hyprland_version
+            .clone()
+            .zip(system_context.hyprland_uses_lua)
+        {
+            hyprland_version_note = format!(
+                "\nHYPRLAND VERSION DETECTED: {}. Use {} configuration syntax.",
+                version,
+                if uses_lua { "Lua (hyprland.lua)" } else { "Hyprlang (hyprland.conf)" }
+            );
+        } else {
+            println!("\n{} Could not detect Hyprland version.", accent("Dotengine"));
+            print!("Do you know your Hyprland version? (e.g. 0.55.1) [leave blank to use hyprlang]: ");
+            use std::io::Write;
+            std::io::stdout().flush()?;
+            let mut version_input = String::new();
+            std::io::stdin().read_line(&mut version_input)?;
+            let version_input = version_input.trim();
+            if !version_input.is_empty() {
+                let uses_lua = version_input
+                    .split('.')
+                    .next()
+                    .and_then(|major| major.parse::<u32>().ok())
+                    .map(|major| major > 0)
+                    .unwrap_or(false)
+                    || version_input
+                        .split('.')
+                        .nth(1)
+                        .and_then(|minor| minor.parse::<u32>().ok())
+                        .map(|minor| minor >= 55)
+                        .unwrap_or(false);
+                hyprland_version_note = format!(
+                    "\nHYPRLAND VERSION PROVIDED: {}. Use {} configuration syntax.",
+                    version_input,
+                    if uses_lua { "Lua (hyprland.lua)" } else { "Hyprlang (hyprland.conf)" }
+                );
+            } else {
+                hyprland_version_note = "\nHYPRLAND VERSION UNKNOWN: default to Hyprlang (hyprland.conf) syntax.".to_string();
+            }
+        }
+    }
+
+    if !hyprland_version_note.is_empty() {
+        combined_rules.push_str(&hyprland_version_note);
     }
 
     // 7. Construct and execute workflows (unlimited max self-healing retries)
@@ -479,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             image_payloads,
             selected_template,
             &combined_rules,
-            &rofi_bind_value,
+            rofi_bind_value.as_deref(),
             &panel_value,
             &launcher_value,
             &wallpaper_value,

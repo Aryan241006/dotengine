@@ -70,7 +70,27 @@ This document defines the strict syntax requirements, dispatcher commands, and l
 
 ---
 
-## 4. Keybinding Dispatchers & Key Rules
+## 4. Modern Layer Rules (layerrule) Syntax (Hyprland v0.53.0 and above)
+
+*   **Explicit Match Prefix Required**: Positional comma-separated layer rules (e.g. `layerrule = blur, waybar`) are **completely deprecated and trigger syntax errors** (e.g. `invalid field blur: missing a value`). You MUST explicitly prefix the layer namespace with `match:namespace`.
+*   **Explicit Flag Values & Replaced Fields**: 
+    *   `blur` requires an explicit value (like `on`).
+    *   `ignorezero` has been **completely removed** and must be replaced with `ignore_alpha 0` (note the underscore).
+*   **Correct Syntax Examples**:
+    *   *Incorrect (Deprecated / Syntax Error):*
+        ```ini
+        layerrule = blur, waybar
+        layerrule = ignorezero, waybar
+        ```
+    *   *Correct (Modern / Required Syntax):*
+        ```ini
+        layerrule = blur on, match:namespace ^(waybar)$
+        layerrule = ignore_alpha 0, match:namespace ^(waybar)$
+        ```
+
+---
+
+## 5. Keybinding Dispatchers & Key Rules
 
 *   **Dispatcher for Floating**: To toggle a window between floating and tiling, you must use the **`togglefloating`** dispatcher. Never use `togglefloat` or `float` as a dispatcher.
     *   *Incorrect:* `bind = SUPER, V, togglefloat`

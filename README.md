@@ -1,12 +1,10 @@
 # Dotengine
 
 ```
-      ____        __                  _             
-     / __ \____  / /____  ____  ____ _(_)___  ___   
-    / / / / __ \/ __/ _ \/ __ \/ __ `/ / __ \/ _ \  
-   / /_/ / /_/ / /_/  __/ / / / /_/ / / / / /  __/  
-  /_____/\____/\__/\___/_/ /_/\__, /_/_/ /_/\___/   
-                             /____/                 
+ ___   ___ _____ ___ _  _  ___ ___ _  _ ___ 
+|   \ / _ \_   _| __| \| |/ __|_ _| \| | __|
+| |) | (_) || | | _|| .` | (_ || || .` | _| 
+|___/ \___/ |_| |___|_|\_|\___|___|_|\_|___|
 ```
 
 **Dotengine** is an AI-powered desktop configuration and self-healing agent CLI for Hyprland. Built in Rust utilizing Clean/Hexagonal Architecture, it allows users to dynamically generate, apply, and auto-correct visual desktop environments in real time using state-of-the-art generative language models.

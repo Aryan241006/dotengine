@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 // Mock AI Service implementation
 struct MockAi {
+    #[allow(dead_code)]
     fail_first: bool,
 }
 
@@ -150,7 +151,7 @@ async fn test_successful_generation_workflow() {
             vec![],
             Some(0),
             "Use gaps",
-            "SUPER, D",
+            Some("SUPER, D"),
             "ags",
             "rofi",
             "hyprpaper",
@@ -190,7 +191,7 @@ async fn test_self_healing_recovery_workflow() {
             vec![],
             Some(0),
             "Use gaps",
-            "SUPER, D",
+            Some("SUPER, D"),
             "ags",
             "rofi",
             "hyprpaper",

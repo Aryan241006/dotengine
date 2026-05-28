@@ -5,13 +5,11 @@ set -e
 REPO="Aryan241006/dotengine"
 BINARY_NAME="dotengine"
 
-echo -e "\x1b[38;2;129;140;248m"
-echo "  ____        __                  _             "
-echo " / __ \____  / /____  ____  ____ _(_)___  ___   "
-echo "/ / / / __ \/ __/ _ \/ __ \/ __ \`/ / __ \/ _ \  "
-echo "/ /_/ / /_/ / /_/  __/ / / / /_/ / / / / /  __/  "
-echo "/_____/\____/\__/\___/_/ /_/\__, /_/_/ /_/\___/   "
-echo "                           /____/                 "
+echo -e "\x1b[38;2;120;138;62m"
+echo " ___   ___ _____ ___ _  _  ___ ___ _  _ ___ "
+echo "|   \ / _ \_   _| __| \| |/ __|_ _| \| | __|"
+echo "| |) | (_) || | | _|| .\` | (_ || || .\` | _| "
+echo "|___/ \___/ |_| |___|_|\_|\___|___|_|\_|___|"
 echo -e "\x1b[0m"
 echo -e "\x1b[38;2;166;227;161m✔ Starting Dotengine CLI Installation...\x1b[0m"
 
@@ -23,11 +21,8 @@ case "$OS" in
   linux)
     PLATFORM="unknown-linux-gnu"
     ;;
-  darwin)
-    PLATFORM="apple-darwin"
-    ;;
   *)
-    echo -e "\x1b[38;2;243;139;168m✖ Error: Unsupported operating system: $OS\x1b[0m"
+    echo -e "\x1b[38;2;243;139;168m✖ Error: Unsupported operating system: $OS. Dotengine currently supports Linux (Hyprland).\x1b[0m"
     exit 1
     ;;
 esac
@@ -36,11 +31,8 @@ case "$ARCH" in
   x86_64)
     TARGET_ARCH="x86_64"
     ;;
-  arm64|aarch64)
-    TARGET_ARCH="aarch64"
-    ;;
   *)
-    echo -e "\x1b[38;2;243;139;168m✖ Error: CPU architecture '$ARCH' is not supported by pre-compiled releases.\x1b[0m"
+    echo -e "\x1b[38;2;243;139;168m✖ Error: CPU architecture '$ARCH' is not supported. Pre-compiled Linux releases are currently available for x86_64.\x1b[0m"
     exit 1
     ;;
 esac

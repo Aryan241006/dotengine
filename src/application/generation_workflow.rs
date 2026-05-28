@@ -75,7 +75,7 @@ impl GenerationWorkflow {
         image_payloads: Vec<ImagePayload>,
         selected_template_index: Option<usize>,
         design_rules_content: &str,
-        rofi_bind: &str,
+        rofi_bind: Option<&str>,
         panel_util: &str,
         launcher_util: &str,
         wallpaper_util: &str,
@@ -114,30 +114,7 @@ impl GenerationWorkflow {
         self.recommend_software(&raw_prompt, chosen_template);
 
         // Scan system parameters
-        let system_context = activity(
-            "Inspecting operating environment",
-            self.system_manager.detect_system_context(),
-        )
-        .await?;
-        println!(
-            "{} Detected system context successfully.",
-            accent("Dotengine")
-        );
-        println!("    Distro: {}", system_context.distribution);
-        println!(
-            "    Package Manager: {}",
-            system_context
-                .package_manager
-                .as_deref()
-                .unwrap_or("unsupported or unavailable")
-        );
-        println!("    Active Monitors: {}", system_context.monitors.len());
-        for m in &system_context.monitors {
-            println!(
-                "      - {} ({}x{} @ {}Hz, scale: {})",
-                m.name, m.width, m.height, m.refresh_rate, m.scale
-            );
-        }
+        let system_context = self.system_manager.detect_system_context().await?;
 
         // Dynamically build check list from selected components
         let mut tools_to_check = Vec::new();
@@ -209,8 +186,98 @@ impl GenerationWorkflow {
             );
         }
 
+        // Check Nerd Font installation in system font cache
+        let nerd_font_installed = system_context.package_status.get("fonts-nerd-font").copied().unwrap_or(false);
+        if !nerd_font_installed {
+            println!(
+                "{} Required icon glyph font '{}' is missing from the system font cache.",
+                accent("Dotengine"),
+                "JetBrainsMono Nerd Font"
+            );
+            println!("{} Recommending automatic download and installation of JetBrainsMono Nerd Font...", accent("Dotengine"));
+            print!("Would you like to install JetBrainsMono Nerd Font now? [Y/n]: ");
+            let mut font_choice = String::new();
+            if std::io::stdin().read_line(&mut font_choice).is_ok() {
+                let trimmed = font_choice.trim().to_lowercase();
+                if trimmed != "n" && trimmed != "no" {
+                    println!("{} Downloading JetBrainsMono Nerd Font...", accent("Dotengine"));
+                    let home = self.system_manager.get_home_directory();
+                    let font_dir = home.join(".local/share/fonts");
+                    let _ = std::fs::create_dir_all(&font_dir);
+                    
+                    // Run a standard curl command to download it
+                    let download_status = tokio::process::Command::new("curl")
+                        .arg("-fsSL")
+                        .arg("https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf")
+                        .arg("-o")
+                        .arg(font_dir.join("JetBrainsMonoNerdFont-Regular.ttf"))
+                        .status()
+                        .await;
+                        
+                    if let Ok(status) = download_status {
+                        if status.success() {
+                            let _ = tokio::process::Command::new("fc-cache")
+                                .arg("-f")
+                                .arg("-v")
+                                .status()
+                                .await;
+                            println!("{}", crate::ui::success("JetBrainsMono Nerd Font installed successfully."));
+                        } else {
+                            println!("{}", crate::ui::error("Failed to download JetBrainsMono Nerd Font via curl."));
+                        }
+                    } else {
+                        println!("{}", crate::ui::error("Failed to execute curl."));
+                    }
+                } else {
+                    println!("{}", crate::ui::info("Font installation skipped. Icons may not render correctly."));
+                }
+            }
+        } else {
+            println!(
+                "{} Verified prerequisite '{}' is installed.",
+                accent("Dotengine"),
+                "JetBrainsMono Nerd Font"
+            );
+        }
+
         // Formulate request prompt
         let mut final_guidelines = custom_guidelines.unwrap_or_default();
+
+        // Scan and load existing dotfiles config context to enable smart editing capabilities
+        let mut existing_configs_context = String::new();
+        let paths_to_probe = vec![
+            ".config/hypr/hyprland.conf",
+            ".config/waybar/config",
+            ".config/waybar/style.css",
+            ".config/rofi/config.rasi",
+            ".config/swaync/config.json",
+            ".config/swaync/style.css",
+            ".config/dunst/dunstrc",
+        ];
+
+        for path_str in paths_to_probe {
+            let path = std::path::Path::new(path_str);
+            if let Ok(content) = self.system_manager.read_config_file(path).await {
+                if !content.trim().is_empty() {
+                    existing_configs_context.push_str(&format!(
+                        "\n--- FILE: {} ---\n{}\n",
+                        path_str, content
+                    ));
+                }
+            }
+        }
+
+        if !existing_configs_context.is_empty() {
+            let editing_rule = format!(
+                "\n=== CURRENT ACTIVE CONFIGURATION CONTEXT ===\n\
+                 The host system already has the following active configurations:\n{}\n\
+                 SMART EDITING INSTRUCTIONS:\n\
+                 1. If the user's prompt is an edit, tweak, or incremental modification of their existing setup (e.g. changing border sizes, adjusting gaps, adding keyboard binds, changing Waybar module alignments, or swapping color themes), you MUST preserve their existing configuration framework, monitor setups, and active custom layouts. Only make the precise changes requested on top of these active files, returning the complete updated configuration contents.\n\
+                 2. Do NOT discard their working configuration unless they explicitly request a complete redesign from scratch.",
+                existing_configs_context
+            );
+            final_guidelines.push_str(&editing_rule);
+        }
 
         // Append panel instructions
         if panel_util != "none" {
@@ -229,8 +296,13 @@ impl GenerationWorkflow {
             );
             final_guidelines.push_str(&launcher_rule);
             if launcher_util == "rofi" {
-                let rofi_guideline = format!("\nCRITICAL KEYBINDING: You MUST map Rofi launcher to the exact shortcut: bind = {}, exec, rofi -show drun. Remove any other default Rofi launch bindings.", rofi_bind);
-                final_guidelines.push_str(&rofi_guideline);
+                if let Some(bind) = rofi_bind {
+                    let rofi_guideline = format!("\nCRITICAL KEYBINDING: You MUST map Rofi launcher to the exact shortcut: bind = {}, exec, rofi -show drun. Remove any other default Rofi launch bindings.", bind);
+                    final_guidelines.push_str(&rofi_guideline);
+                } else {
+                    let rofi_guideline = "\nROFI KEYBINDING: Preserve any existing Rofi launcher keybinds unless the user explicitly requests a change. Do not add new Rofi keybinds if none exist.";
+                    final_guidelines.push_str(rofi_guideline);
+                }
             }
         }
 
@@ -241,6 +313,11 @@ impl GenerationWorkflow {
                 notification_util, notification_util
             );
             final_guidelines.push_str(&notif_rule);
+        }
+
+        if panel_util == "waybar" {
+            let waybar_rule = "\nWAYBAR STARTUP: Ensure Hyprland launches Waybar on boot using 'exec-once = waybar' if it is not already present. If editing existing configs, preserve any custom Waybar launch commands while ensuring Waybar is started.";
+            final_guidelines.push_str(waybar_rule);
         }
 
         // Append system applets launch instructions
@@ -291,11 +368,17 @@ impl GenerationWorkflow {
                                2. NEVER define blur properties directly within 'decoration { ... }' (e.g. do NOT use 'blur = true', 'blur_size = ...', or 'decoration:blur'). Doing so will trigger critical parsing errors on reload.";
         final_guidelines.push_str(blur_syntax_rule);
 
+        // Append critical invalid-key guardrails
+        let invalid_key_rule = "\nCRITICAL INVALID KEY RULES:\n\
+                                1. NEVER add a 'waybar:' section or key inside hyprland.conf/hyprland.lua. Waybar is a separate process and must be started with 'exec-once = waybar'.\n\
+                                2. NEVER emit tokens like 'type ignorezero' in Hyprland configs. Use only documented keys for the detected Hyprland version.";
+        final_guidelines.push_str(invalid_key_rule);
+
         // Append icon font / unicode block guidelines
         let icon_rule = "\nUNICODE ICON / FONT GLYPH RULES:\n\
-                         1. Declare fallback font families in all Rofi, Waybar, and AGS CSS configurations to support standard FontAwesome and Nerd Font styles:\n\
-                            font-family: \"JetBrainsMono Nerd Font\", \"Font Awesome 6 Free\", \"FontAwesome\", sans-serif;\n\
-                         2. Utilize standard, widely compatible unicode glyphs/icons for Waybar modules (e.g. standard battery/wifi/sound icons) to avoid raw system-unsupported unicode tofu blocks.";
+                          1. Declare fallback font families in all Rofi, Waybar, and AGS CSS configurations to support standard FontAwesome and Nerd Font styles:\n\
+                             font-family: \"JetBrainsMono Nerd Font\", \"Font Awesome 6 Free\", \"FontAwesome\", sans-serif;\n\
+                          2. Utilize standard, widely compatible unicode glyphs/icons for Waybar modules (e.g. standard battery/wifi/sound icons) to avoid raw system-unsupported unicode tofu blocks.";
         final_guidelines.push_str(icon_rule);
 
         let mut prompt = UserPrompt::new(raw_prompt).with_guidelines(final_guidelines);
@@ -305,12 +388,9 @@ impl GenerationWorkflow {
 
         // Hit LLM Service
         println!();
-        let generated_configs = activity(
-            "Generating desktop configuration",
-            self.ai_service
-                .generate_config(&prompt, &system_context, design_rules_content),
-        )
-        .await?;
+        let generated_configs = self
+            .generate_with_validation(&prompt, &system_context, design_rules_content)
+            .await?;
         println!(
             "{} Synthesis completed. Received {} configuration files.",
             accent("Dotengine"),
@@ -365,5 +445,73 @@ impl GenerationWorkflow {
                 Ok(healed_configs)
             }
         }
+    }
+
+    async fn generate_with_validation(
+        &self,
+        prompt: &UserPrompt,
+        system_context: &crate::domain::SystemContext,
+        design_rules_content: &str,
+    ) -> Result<Vec<ConfigFile>, Box<dyn std::error::Error + Send + Sync>> {
+        const MAX_RETRIES: usize = 3;
+        let mut retry_prompt = prompt.clone();
+
+        for attempt in 1..=MAX_RETRIES {
+            let generated_configs = activity(
+                "Generating desktop configuration",
+                self.ai_service
+                    .generate_config(&retry_prompt, system_context, design_rules_content),
+            )
+            .await?;
+
+            if let Err(errors) = validate_generated_configs(&generated_configs) {
+                println!(
+                    "{} Invalid configuration detected (attempt {}/{}).",
+                    accent("Dotengine"),
+                    attempt,
+                    MAX_RETRIES
+                );
+                for error in &errors {
+                    println!("    - {}", error);
+                }
+
+                let mut guidelines = retry_prompt.custom_guidelines.clone().unwrap_or_default();
+                guidelines.push_str("\n\nCRITICAL REGENERATION RULES:\n");
+                for error in errors {
+                    guidelines.push_str(&format!("- Fix this error and do not reintroduce it: {}\n", error));
+                }
+                retry_prompt.custom_guidelines = Some(guidelines);
+                continue;
+            }
+
+            return Ok(generated_configs);
+        }
+
+        Err("Failed to generate valid configuration after multiple attempts.".into())
+    }
+}
+
+fn validate_generated_configs(configs: &[ConfigFile]) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for config in configs {
+        if config
+            .relative_path
+            .to_string_lossy()
+            .ends_with("/hyprland.conf")
+        {
+            let lower = config.content.to_lowercase();
+            if lower.contains("waybar:") {
+                errors.push("hyprland.conf: invalid key 'waybar:'".to_string());
+            }
+            if lower.contains("type ignorezero") {
+                errors.push("hyprland.conf: invalid token 'type ignorezero'".to_string());
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }

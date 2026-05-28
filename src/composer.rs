@@ -13,18 +13,23 @@ pub struct Composition {
 pub fn compose(
     initial_text: String,
     initial_images: Vec<ImagePayload>,
+    version: String,
+    provider: String,
 ) -> Result<Composition, Box<dyn std::error::Error + Send + Sync>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return compose_line_mode(initial_text, initial_images);
+        return compose_line_mode(initial_text, initial_images, version, provider);
     }
 
-    Composer::new(initial_text, initial_images).run()
+    Composer::new(initial_text, initial_images, version, provider).run()
 }
 
 fn compose_line_mode(
     initial_text: String,
     images: Vec<ImagePayload>,
+    version: String,
+    provider: String,
 ) -> Result<Composition, Box<dyn std::error::Error + Send + Sync>> {
+    println!("\x1b[1;38;2;120;138;62mDOTENGINE\x1b[0m (v{}) | Provider: {}", version, provider);
     println!("{}", heading("Dotengine prompt"));
     if !initial_text.is_empty() {
         println!("Suggested prompt: {}", initial_text);
@@ -49,16 +54,20 @@ struct Composer {
     cursor: usize,
     images: Vec<ImagePayload>,
     notice: String,
+    version: String,
+    provider: String,
 }
 
 impl Composer {
-    fn new(text: String, images: Vec<ImagePayload>) -> Self {
+    fn new(text: String, images: Vec<ImagePayload>, version: String, provider: String) -> Self {
         let cursor = text.len();
         Self {
             text,
             cursor,
             images,
             notice: String::new(),
+            version,
+            provider,
         }
     }
 
@@ -212,26 +221,46 @@ impl Composer {
     fn redraw(&self) -> io::Result<()> {
         let box_width = get_terminal_width();
         let content_width = box_width - 4;
-        let mut lines = vec![heading(&make_top_border(box_width))];
-        let display_text = if self.text.is_empty() {
-            "_ Ask Dotengine to style your desktop...".to_string()
+        
+        let mut lines = Vec::new();
+        lines.push(String::new());
+        lines.push(format!("  \x1b[1;38;2;120;138;62m ___   ___ _____ ___ _  _  ___ ___ _  _ ___ \x1b[0m"));
+        lines.push(format!("  \x1b[1;38;2;120;138;62m|   \\ / _ \\_   _| __| \\| |/ __|_ _| \\| | __|\x1b[0m"));
+        lines.push(format!("  \x1b[1;38;2;120;138;62m| |) | (_) || | | _|| .` | (_ || || .` | _| \x1b[0m"));
+        lines.push(format!("  \x1b[1;38;2;120;138;62m|___/ \\___/ |_| |___|_|\\_|\\___|___|_|\\_|___|\x1b[0m"));
+        lines.push(String::new());
+        lines.push(format!("  \x1b[38;2;85;102;40mVersion  :: v{}\x1b[0m", self.version));
+        lines.push(format!("  \x1b[38;2;85;102;40mProvider :: {}\x1b[0m", self.provider));
+        lines.push(String::new());
+        lines.push(format!("  \x1b[1;38;2;120;138;62mDescribe your design\x1b[0m"));
+        lines.push(heading(&make_top_border(box_width)));
+        
+        let plain_text = if self.text.is_empty() {
+            "> _ Ask Dotengine to style your desktop...".to_string()
         } else {
             let mut display = self.text.clone();
             display.insert(self.cursor, '_');
-            display
+            format!("> {}", display)
         };
-        for line in wrap_text(&display_text, content_width) {
-            lines.push(input_row(&line, box_width));
+        
+        for line in wrap_text(&plain_text, content_width) {
+            lines.push(input_row_styled(&line, box_width, true, self.text.is_empty()));
         }
+        
         if !self.images.is_empty() {
-            lines.push(input_row("", box_width));
-            lines.push(input_row(&format!(
-                "  {}",
-                (1..=self.images.len())
-                    .map(|index| format!("[ img{} ]", index))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ), box_width));
+            lines.push(input_row_styled("", box_width, false, false));
+            lines.push(input_row_styled(
+                &format!(
+                    "  {}",
+                    (1..=self.images.len())
+                        .map(|index| format!("[ img{} ]", index))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                box_width,
+                false,
+                false,
+            ));
         }
         lines.push(heading(&make_bottom_border(box_width)));
         lines.push(format!(
@@ -377,28 +406,61 @@ fn get_terminal_width() -> usize {
             let mut parts = stdout.split_whitespace();
             if let (Some(_rows), Some(cols)) = (parts.next(), parts.next()) {
                 if let Ok(width) = cols.parse::<usize>() {
-                    return width.max(40);
+                    return width.max(84);
                 }
             }
         }
     }
-    72
+    84
 }
 
 fn make_top_border(width: usize) -> String {
     let dashes = "─".repeat(width - 2);
-    format!("╭{}╮", dashes)
+    format!("┌{}┐", dashes)
 }
 
 fn make_bottom_border(width: usize) -> String {
     let dashes = "─".repeat(width - 2);
-    format!("╰{}╯", dashes)
+    format!("└{}┘", dashes)
 }
 
+#[allow(dead_code)]
 fn input_row(content: &str, box_width: usize) -> String {
     let content_width = box_width - 4;
     let visible_content: String = content.chars().take(content_width).collect();
     format!("│ {:<width$} │", visible_content, width = content_width)
+}
+
+fn input_row_styled(
+    content: &str,
+    box_width: usize,
+    is_styled_prompt: bool,
+    is_empty: bool,
+) -> String {
+    let content_width = box_width - 4;
+    let visible_content: String = content.chars().take(content_width).collect();
+    let mut padded_content = format!("{:<width$}", visible_content, width = content_width);
+
+    if is_styled_prompt {
+        if padded_content.starts_with("> ") {
+            if is_empty {
+                padded_content = format!(
+                    "\x1b[38;2;120;138;62m>\x1b[0m \x1b[38;2;85;102;40m{}\x1b[0m",
+                    &padded_content[2..]
+                );
+            } else {
+                padded_content = format!(
+                    "\x1b[38;2;120;138;62m>\x1b[0m {}",
+                    &padded_content[2..]
+                );
+            }
+        } else if is_empty {
+            padded_content = format!("\x1b[38;2;85;102;40m{}\x1b[0m", padded_content);
+        }
+    }
+
+    let border = "\x1b[38;2;120;138;62m│\x1b[0m";
+    format!("{} {} {}", border, padded_content, border)
 }
 
 #[cfg(test)]

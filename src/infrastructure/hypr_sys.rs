@@ -157,6 +157,43 @@ impl HyprSys {
         LinuxDistribution::unknown()
     }
 
+    async fn detect_hyprland_version(&self) -> Option<(String, bool)> {
+        let output = Command::new("hyprctl").arg("version").output().await.ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let version = stdout
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.to_lowercase().starts_with("hyprland") {
+                    trimmed.split_whitespace().nth(1).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                stdout
+                    .split_whitespace()
+                    .find(|part| part.chars().any(|c| c.is_ascii_digit()))
+                    .map(|s| s.to_string())
+            });
+
+        let version = version?;
+        let (major, minor) = Self::parse_version_parts(&version);
+        let uses_lua = major > 0 || minor >= 55;
+
+        Some((version, uses_lua))
+    }
+
+    fn parse_version_parts(version: &str) -> (u32, u32) {
+        let mut parts = version.split('.');
+        let major = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
+        let minor = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
+        (major, minor)
+    }
+
     fn package_manager_candidates(distribution: &LinuxDistribution) -> &'static [PackageManager] {
         if distribution.belongs_to(&["arch", "manjaro", "endeavouros", "garuda"]) {
             &[
@@ -349,6 +386,21 @@ impl HyprSys {
             false
         }
     }
+
+    async fn check_nerd_font_installed(&self) -> bool {
+        let output = Command::new("fc-list")
+            .arg(":")
+            .arg("family")
+            .output()
+            .await;
+
+        if let Ok(out) = output {
+            let list = String::from_utf8_lossy(&out.stdout).to_string();
+            list.to_lowercase().contains("nerd")
+        } else {
+            false
+        }
+    }
 }
 
 #[async_trait]
@@ -431,11 +483,17 @@ impl SystemManager for HyprSys {
 
         // Add Font Awesome check
         let font_awesome_installed = self.check_font_awesome_installed().await;
+        let nerd_font_installed = self.check_nerd_font_installed().await;
         package_status.insert("fonts-font-awesome".to_string(), font_awesome_installed);
+        package_status.insert("fonts-nerd-font".to_string(), nerd_font_installed);
 
         let mut context = SystemContext::new(distribution.display_name, package_manager);
         context.monitors = monitors;
         context.package_status = package_status;
+
+        if let Some((version, uses_lua)) = self.detect_hyprland_version().await {
+            context = context.with_hyprland_version(version, uses_lua);
+        }
 
         Ok(context)
     }

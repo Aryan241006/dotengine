@@ -2,7 +2,7 @@
 set -e
 
 # Define repository details (User should modify this with their GitHub username)
-REPO="aryan/dotengine"
+REPO="Aryan241006/dotengine"
 BINARY_NAME="dotengine"
 
 echo -e "\x1b[38;2;129;140;248m"

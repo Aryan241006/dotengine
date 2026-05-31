@@ -1,176 +1,245 @@
-# Hyprland & Desktop Shell Design Principles (design-skill.md)
+# Hyprland Design Skill
 
-This document outlines the core design systems, color palettes, visual hierarchies, software integrations, and advanced ricing guidelines for generating highly modern, visually striking, and functionally complete Hyprland environments.
+This document is the visual and composition reference for Dotengine. It should help the generator understand what a Hyprland rice is trying to feel like, how complete setups are wired, and how to transform a screenshot into a usable desktop plan.
 
----
+## 1. What A Good Setup Must Feel Like
 
-## 1. Modern Color Palettes
+- Finished, not just installed.
+- Consistent across wallpaper, panel, launcher, lockscreen, notifications, and tray helpers.
+- Balanced between visual identity and daily usability.
+- Clearly wired on first login:
+  - wallpaper appears
+  - panel starts
+  - lockscreen works
+  - idle behavior is defined
+  - portals and agents are not forgotten
 
-A gorgeous UI starts with a meticulously curated color palette. Avoid default or high-saturation primaries.
+## 2. Reference-Design Interpretation
 
-### Catppuccin Mocha (Dark Pastel theme)
-- **Rosewater**: `#f5e0dc`
-- **Flamingo**: `#f2cdcd`
-- **Pink**: `#f5c2e7`
-- **Mauve**: `#cba6f7` (Primary Accent)
-- **Red**: `#f38ba8` (Danger/Error)
-- **Peach**: `#fab387` (Warning)
-- **Yellow**: `#f9e2af`
-- **Green**: `#a6e3a1` (Success)
-- **Teal**: `#94e2d5`
-- **Sky**: `#89dceb`
-- **Sapphire**: `#74c7ec`
-- **Blue**: `#89b4fa` (Secondary Accent)
-- **Lavender**: `#b4befe`
-- **Base (Background)**: `#1e1e2e`
-- **Mantle (Sub-bg)**: `#181825`
-- **Crust (Deep-bg)**: `#11111b`
+- Treat screenshots as design intent, not as a pixel-perfect contract.
+- Infer:
+  - palette
+  - contrast level
+  - blur strength
+  - rounding
+  - density
+  - spacing rhythm
+  - launcher style
+  - panel shape
+  - notification style
+  - lockscreen mood
+  - wallpaper behavior
+  - startup completeness
+- If the screenshot implies a fuller desktop, wire the missing plumbing instead of only copying the visible surface.
 
-### Nord (Cool Arctic theme)
-- **Polar Night (Backgrounds)**: `#2e3440` (Nord0), `#3b4252` (Nord1), `#434c5e` (Nord2)
-- **Snow Storm (Foregrounds)**: `#d8dee9` (Nord4), `#e5e9f0` (Nord5), `#eceff4` (Nord6)
-- **Frost (Accents/Highlights)**: `#8fbcbb` (Nord7), `#88c0d0` (Nord8), `#81a1c1` (Nord9), `#5e81ac` (Nord10)
-- **Aurora (Indicators)**: `#bf616a` (Red), `#d08770` (Orange), `#ebcb8b` (Yellow), `#a3be8c` (Green), `#b48ead` (Purple)
+## 3. Design Archetypes
 
-### Tokyo Night (Cyberpunk Dark theme)
-- **Background**: `#1a1b26`
-- **Terminal Background**: `#16161e`
-- **Foreground**: `#c0caf5`
-- **Blue (Accent)**: `#7aa2f7`
-- **Cyan**: `#7dcfff`
-- **Magenta**: `#bb9af7`
-- **Red**: `#f7768e`
-- **Orange**: `#ff9e64`
-- **Yellow**: `#e0af68`
-- **Green**: `#9ece6a`
+### Glassmorphic Glow
 
----
+- High blur
+- Rounded cards
+- Layered transparency
+- Soft borders and ambient shadows
+- Best when paired with an interactive shell, a modern launcher, and a polished lockscreen
 
-## 2. Software Architecture Suggestions
+### Minimalist Arctic
 
-When designing an aesthetic, dotengine suggests the best software combinations based on user visual choices:
+- Light visual weight
+- Clean typography
+- Tight module spacing
+- Strong contrast
+- Best for Waybar-style panels and low-overhead notification setups
 
-| Design Archetype | Visual Features | Recommended Stack | Rationale & Recommendation |
-| :--- | :--- | :--- | :--- |
-| **Glassmorphic Glow** | Vibrant blur, rounded notifications, dynamic dashboard | **AGS (Aylurs GTK Shell)** + **Rofi** | **Highly Recommended**. AGS handles JS/TS scripting, allowing dynamic widgets, unified audio controllers, and premium glass filters (`backdrop-filter`) that other options cannot match easily. |
-| **Minimalist Arctic** | Clean flat widgets, thin borders, high contrast, low overhead | **Waybar** + **SwayNC** + **Rofi** | Recommended for low-spec or keyboard-centric workflows. Simple CSS styling via Waybar and modern widget layout cards via SwayNC fit the blocky Nord vibe seamlessly. |
-| **Fluid Interactive** | High framerate widgets, fluid custom overlays, QML layouts | **Quick Shell** + **SwayNC** + **Rofi** | Excellent alternative for developers wanting QML-based UI widgets with high-performance animations and custom state management. |
+### Fluid Interactive
 
----
+- Motion-forward widgets
+- Dashboard-like shells
+- Layered panels and overlays
+- Good for setups that want richer interaction without looking crowded
 
-## 3. Style Sheets & Layout Guidelines
+### Terminal-First Functional
 
-### Hyprland Config Rules (`hyprland.conf`)
-- **Gaps**: Use internal gaps of `5px` to `8px` and outer gaps of `10px` to `15px` to allow wallpaper visibility.
-- **Rounding**: Set `decoration:rounding = 10` to `14` for smooth, modern curves matching standard GTK windows.
-- **Shadows**: Enable shadows with high blur (`decoration:shadow:range = 15`, `decoration:shadow:render_power = 3`, `decoration:shadow:color = rgba(1a1a1aee)`).
-- **Blur**: Use dual-cavity blur for glass panels (`decoration:blur:enabled = true`, `size = 8`, `passes = 3`, `new_optimizations = true`, `xray = true`).
-- **Animations**: Prefer custom bezier curves for springy windows:
-  ```ini
-  bezier = wind, 0.05, 0.9, 0.1, 1.05
-  bezier = winShrink, 0.15, 0.85, 0.1, 1.1
-  animation = windows, 1, 6, wind, slide
-  animation = windowsIn, 1, 6, winShrink, slide
-  animation = border, 1, 10, default
-  animation = fade, 1, 7, default
-  animation = workspaces, 1, 5, wind, slide
-  ```
+- Sparse but deliberate
+- Highly legible
+- Compact launcher and panel
+- Minimal noise
+- Focus on system clarity and speed
 
-### AGS Styling (SCSS)
-Use variables matching the chosen palette, applying CSS grid and box-model rules.
-- **Glass Panel Style**:
+## 4. Example-Config Pattern Library
+
+Use the official example configuration page and the referenced dotfiles as pattern sources for layout, file structure, and integration depth:
+
+- `end-4/dots-hyprland`
+- `mylinuxforwork/dotfiles`
+- `fufexan/dotfiles`
+- `linuxmobile/hyprland-dots`
+- `flick0/dotfiles`
+- `1amSimp1e/dots`
+- `notusknot/dotfiles-nix`
+- `coffebar/dotfiles`
+
+What to learn from these repositories:
+
+- how complete rice stacks split responsibilities across files
+- how startup daemons and shell components are launched
+- how panel config, CSS, and scripts work together
+- how lockscreen and wallpaper behavior are kept visually aligned
+- how launcher, notification, and tray workflows are made part of the desktop instead of optional extras
+- how reproducibility and theming scale from single-file configs to multi-directory setups
+
+## 5. Common File Families To Expect
+
+- Hyprland config:
+  - `hyprland.conf`
+  - `hyprland.lua`
+- Panel or shell:
+  - Waybar config and CSS
+  - AGS JavaScript/TypeScript and stylesheet files
+  - Quickshell/QML modules
+- Launcher:
+  - Rofi `rasi`
+  - other launcher config directories when selected
+- Notification layer:
+  - SwayNC JSON and CSS
+  - Dunst config when used instead
+- Lockscreen:
+  - Hyprlock config
+- Wallpaper:
+  - Hyprpaper config
+  - or another wallpaper daemon config when selected
+- Support assets:
+  - theme variables
+  - fonts
+  - GTK settings
+  - scripts
+  - user service files
+
+## 6. Completion Rules
+
+- A design is incomplete if it only changes colors but does not wire startup behavior.
+- A design is incomplete if it only installs packages without creating configs.
+- A design is incomplete if the desktop cannot explain what starts on login.
+- A design is incomplete if wallpaper, lockscreen, panel, and notifications do not align visually and functionally.
+- A barebones Hyprland install should be turned into a usable desktop, not a set of disconnected apps.
+
+## 7. Visual Guidance
+
+- **AVOID GENERIC OUTLINES**: Do NOT rely on heavy borders or generic colored outlines around windows, active panels, or buttons unless explicitly requested. Modern, state-of-the-art designs favor borderless blocks, soft drop-shadows, subtle transparencies, and glassmorphism. Set border/outline sizes to `0` or keep them extremely subtle (`1px` with a highly transparent overlay color).
+- Prefer purposeful color systems over random accent colors (e.g. utilize Catppuccin, Gruvbox, Nord, or Tokyo Night color mappings with 0.8-0.9 opacity for blurred windows).
+- Use blur, opacity, and rounding as part of a single visual language.
+- Keep panel and launcher styling aligned with the wallpaper and lockscreen tone.
+- Avoid hollow setups that look themed in screenshots but lack startup wiring or companion services.
+
+## 8. Premium Component Styling Blueprints
+
+### A. Rofi Premium Styling Blueprint
+To achieve a modern, premium appearance and completely bypass the system's ugly fallback brownish/yellowish outlines, you MUST prepend `@theme "/dev/null"` to `/config.rasi` and define clean, padded layout elements:
+```css
+configuration {
+    modi: "drun";
+    show-icons: true;
+    icon-theme: "Papirus";
+    drun-display-format: "{name}";
+    disable-history: false;
+    hide-scrollbar: true;
+    display-drun: "   ";
+    sidebar-mode: false;
+}
+
+@theme "/dev/null"
+
+* {
+    bg-col:  #1e1e2e;
+    bg-col-light: #1e1e2e;
+    border-col: #89b4fa; /* Accent color */
+    selected-col: #89b4fa;
+    fg-col: #cdd6f4;
+    fg-col2: #a6adc8;
+    width: 600;
+    font: "JetBrainsMono Nerd Font 12";
+}
+
+element-text, element-icon , mode-switcher {
+    background-color: inherit;
+    text-color:       inherit;
+}
+
+window {
+    height: 450px;
+    border: 2px;
+    border-color: @border-col;
+    background-color: @bg-col;
+    border-radius: 16px;
+}
+
+mainbox {
+    background-color: @bg-col;
+}
+
+inputbar {
+    children: [prompt,entry];
+    background-color: @bg-col;
+    border-radius: 5px;
+    padding: 2px;
+}
+
+prompt {
+    background-color: @selected-col;
+    padding: 8px;
+    text-color: #11111b;
+    border-radius: 8px;
+    margin: 10px 0px 10px 10px;
+}
+
+entry {
+    padding: 8px;
+    margin: 10px 10px 10px 0px;
+    text-color: @fg-col;
+    background-color: rgba(30, 30, 46, 0.5);
+    border-radius: 8px;
+    placeholder: "Search applications...";
+    placeholder-color: @fg-col2;
+}
+
+listview {
+    border: 0px 0px 0px;
+    padding: 6px 0px 0px;
+    margin: 10px 10px 0px 10px;
+    columns: 1;
+    lines: 8;
+    background-color: @bg-col;
+}
+
+element {
+    padding: 10px;
+    background-color: @bg-col;
+    text-color: @fg-col;
+    border-radius: 8px;
+    margin: 2px 0px;
+}
+
+element-icon {
+    size: 28px;
+    margin: 0 10px 0 0;
+}
+
+element selected {
+    background-color:  @selected-col;
+    text-color: #11111b;
+}
+```
+
+### B. Waybar Premium Styling Blueprint
+Rely on capsule (pill-shaped) layouts and glassmorphic transparency rather than boxy outline-heavy structures:
+- **Pill Modules**: Group modules into pill-shaped containers with rounded corners (`border-radius: 15px`), padding (`padding: 2px 12px`), margins (`margin: 4px`), and elegant semi-transparent backgrounds (`background-color: rgba(255, 255, 255, 0.05);` or matching theme color).
+- **Glassmorphic Bar**: Style the main bar window with standard CSS opacity and margins to float elegant panels:
   ```css
-  .glass-panel {
-      background-color: rgba(30, 30, 46, 0.65); /* 65% opacity base */
-      border: 1px solid rgba(255, 255, 255, 0.08); /* fine border */
-      border-radius: 12px;
-      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
-  }
-  ```
-
-### Rofi Styling (`.rasi`)
-- Avoid old standard layouts. Use centered prompt overlay with input lines, matching modern app launchers.
-- Enable `blur` on the Rofi window if backed by Hyprland's `blurls = rofi`.
-- Config fragment:
-  ```rasi
-  * {
-      bg: #1e1e2eCC; /* transparent */
-      fg: #cdd6f4;
-      accent: #cba6f7;
-      border-color: rgba(255, 255, 255, 0.1);
-  }
-  window {
-      background-color: @bg;
-      border: 1px;
-      border-color: @border-color;
-      border-radius: 12px;
-      width: 30%;
-  }
-  ```
-
----
-
-## 4. SwayNC Notification Center CSS & Custom Layouts
-
-SwayNC (Sway Notification Center) is a CSS-styled notification manager which provides a control center-style panel:
-- **Nested Structure**: Config files must be saved under `.config/swaync/config.json` and `.config/swaync/style.css`.
-- **Frosted Glass Cards**: Styling rules must apply semi-transparent background colors paired with rounded borders (`border-radius: 10px` to `14px`) and matching box shadows to fit the global desktop aesthetic.
-- **SwayNC Glass styling example**:
-  ```css
-  .notification {
-      background: rgba(30, 30, 46, 0.75);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 12px;
-      color: #cdd6f4;
-      margin: 6px;
-      padding: 10px;
-  }
-  .notification:hover {
-      background: rgba(45, 45, 70, 0.85);
-  }
-  .control-center {
-      background: rgba(24, 24, 37, 0.85);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+  window#waybar {
+      background-color: rgba(30, 30, 46, 0.85); /* transparent background */
       border-radius: 16px;
+      margin: 10px 16px 0px 16px;
   }
   ```
+- **Custom Glyphs**: Bind custom, premium Nerd Font icons (`` clock, `` battery, `` wifi, `` audio, `` power) instead of text blocks.
 
----
 
-## 5. System Tray & Connection Managers Applets
-
-Tray applets bridge the keyboard-centric tiling workflow with quick mouse connectivity actions:
-*   **Startup execution**: Launchers for connection panels MUST be daemonized in `hyprland.conf`:
-    ```ini
-    exec-once = nm-applet --indicator
-    exec-once = blueman-applet
-    ```
-*   **Aesthetic binding shortcuts**: Assign intuitive shortcuts in `hyprland.conf` to easily open advanced system manager dialog sheets on-the-fly:
-    ```ini
-    # Open Network Connections GUI editor
-    bind = SUPER SHIFT, N, exec, nm-connection-editor
-    # Open Blueman Manager panel
-    bind = SUPER SHIFT, B, exec, blueman-manager
-    ```
-
----
-
-## 6. Advanced Complex Ricing Concepts
-
-For rices demanding breathtaking visual choreography and state-of-the-art responsiveness:
-
-### A. Dynamic Wallpaper Systems (`swww`)
-Instead of static wallpaper loaders, use `swww` for smooth, high-fidelity dynamic visual sweeps:
-- **Installation requirement**: Check/install package `"swww"`.
-- **Execution rule**: Start the `swww-daemon` on login and load wallpapers with sliding transition sweeps:
-  ```ini
-  exec-once = swww-daemon
-  exec-once = swww img /path/to/wallpaper.png --transition-type wave --transition-angle 30 --transition-step 90
-  ```
-
-### B. Dynamic Palette Synchronization (`Pywal` / `Material 3`)
-- **Theme Matching**: The generated styles should automatically read the active wallpaper dominant tones and synchronize status panels (Waybar), launchers (Rofi), and terminals (Kitty/Foot) using toolsets like `pywal` or custom Python palette generators.
-
-### C. GTK 3/4 dynamic scaling
-To avoid jarring visual gaps between client windows and native widgets, synchronize GTK templates:
-- Apply theme stylesheets (`.config/gtk-3.0/settings.ini`, `.config/gtk-4.0/settings.ini`) to force color scheme settings (`prefer-dark`), matching icon-themes (like `Papirus-Dark`), and layout fonts (like `Inter`).

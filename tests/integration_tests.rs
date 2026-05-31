@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use dotengine::application::{GenerationWorkflow, HealingWorkflow};
-use dotengine::domain::{ConfigFile, ErrorPayload, MonitorInfo, SystemContext, UserPrompt};
+use dotengine::domain::{
+    ConfigFile, DesignReferenceSpec, ErrorPayload, MonitorInfo, SystemContext, UserPrompt,
+};
 use dotengine::ports::{AiService, SystemManager};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 // Mock AI Service implementation
 struct MockAi {
@@ -13,6 +17,15 @@ struct MockAi {
 
 #[async_trait]
 impl AiService for MockAi {
+    async fn analyze_design_reference(
+        &self,
+        _prompt: &UserPrompt,
+        _system_context: &SystemContext,
+        _design_rules: &str,
+    ) -> Result<DesignReferenceSpec, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(DesignReferenceSpec::default())
+    }
+
     async fn generate_config(
         &self,
         _prompt: &UserPrompt,
@@ -42,6 +55,7 @@ struct MockSys {
     home_dir: PathBuf,
     fail_verification: bool,
     verification_count: std::sync::atomic::AtomicUsize,
+    install_attempts: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -70,8 +84,12 @@ impl SystemManager for MockSys {
 
     async fn install_package(
         &self,
-        _package_name: &str,
+        package_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.install_attempts
+            .lock()
+            .unwrap()
+            .push(package_name.to_string());
         Ok(())
     }
 
@@ -96,7 +114,7 @@ impl SystemManager for MockSys {
         Ok("gaps_in = 5".to_string())
     }
 
-    async fn verify_and_reload(&self, configs: &[ConfigFile]) -> Result<(), ErrorPayload> {
+    async fn verify_and_reload(&self, configs: &[ConfigFile], _wallpaper_query: Option<&str>) -> Result<(), ErrorPayload> {
         let count = self
             .verification_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -140,6 +158,7 @@ async fn test_successful_generation_workflow() {
         home_dir: PathBuf::from("/home/aryan"),
         fail_verification: false,
         verification_count: std::sync::atomic::AtomicUsize::new(0),
+        install_attempts: Mutex::new(Vec::new()),
     });
 
     let healing = HealingWorkflow::new(ai.clone(), sys.clone(), 3);
@@ -151,6 +170,7 @@ async fn test_successful_generation_workflow() {
             vec![],
             Some(0),
             "Use gaps",
+            None,
             Some("SUPER, D"),
             "ags",
             "rofi",
@@ -159,6 +179,7 @@ async fn test_successful_generation_workflow() {
             "minimal violet theme",
             "centered analog clock",
             "swaync",
+            true,
             true,
             true,
         )
@@ -180,6 +201,7 @@ async fn test_self_healing_recovery_workflow() {
         home_dir: PathBuf::from("/home/aryan"),
         fail_verification: true,
         verification_count: std::sync::atomic::AtomicUsize::new(0),
+        install_attempts: Mutex::new(Vec::new()),
     });
 
     let healing = HealingWorkflow::new(ai.clone(), sys.clone(), 3);
@@ -191,6 +213,7 @@ async fn test_self_healing_recovery_workflow() {
             vec![],
             Some(0),
             "Use gaps",
+            None,
             Some("SUPER, D"),
             "ags",
             "rofi",
@@ -201,6 +224,7 @@ async fn test_self_healing_recovery_workflow() {
             "swaync",
             true,
             true,
+            true,
         )
         .await;
 
@@ -209,4 +233,67 @@ async fn test_self_healing_recovery_workflow() {
     assert_eq!(configs.len(), 1);
     // Config should have been repaired from mock repair output
     assert_eq!(configs[0].content, "gaps_in = 6");
+}
+
+#[tokio::test]
+async fn test_missing_fonts_do_not_trigger_network_downloads() {
+    let ai = Arc::new(MockAi { fail_first: false });
+    let sys = Arc::new(MockSys {
+        home_dir: PathBuf::from("/home/aryan"),
+        fail_verification: false,
+        verification_count: std::sync::atomic::AtomicUsize::new(0),
+        install_attempts: Mutex::new(Vec::new()),
+    });
+
+    let healing = HealingWorkflow::new(ai.clone(), sys.clone(), 3);
+    let generation = GenerationWorkflow::new(ai.clone(), sys.clone(), healing);
+
+    let res = generation
+        .execute(
+            "Modern Glass theme".to_string(),
+            vec![],
+            Some(0),
+            "Use gaps",
+            None,
+            Some("SUPER, D"),
+            "ags",
+            "rofi",
+            "hyprpaper",
+            "hyprlock",
+            "minimal violet theme",
+            "centered analog clock",
+            "swaync",
+            true,
+            true,
+            false,
+        )
+        .await;
+
+    assert!(res.is_ok());
+    assert!(sys.install_attempts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_dry_run_does_not_write_files() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let home_dir = std::env::temp_dir().join(format!("dotengine-dry-run-{}", unique));
+    fs::create_dir_all(&home_dir).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_dotengine"))
+        .env("HOME", &home_dir)
+        .arg("--dry-run")
+        .arg("--non-interactive")
+        .arg("--prompt")
+        .arg("minimal desktop")
+        .arg("--model")
+        .arg("openai")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(!home_dir.join(".config/hypr/hyprland.conf").exists());
+    let _ = fs::remove_dir_all(home_dir);
 }

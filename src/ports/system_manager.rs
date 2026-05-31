@@ -40,5 +40,6 @@ pub trait SystemManager: Send + Sync {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Executes validation or reload commands (e.g., `hyprctl reload`), returning diagnostics upon failure
-    async fn verify_and_reload(&self, configs: &[ConfigFile]) -> Result<(), ErrorPayload>;
+    async fn verify_and_reload(&self, configs: &[ConfigFile], wallpaper_query: Option<&str>) -> Result<(), ErrorPayload>;
+
 }

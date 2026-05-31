@@ -1,11 +1,21 @@
-use clap::Parser;
-use dotengine::application::{GenerationWorkflow, HealingWorkflow};
+use clap::{ArgAction, Parser};
+use dotengine::application::{
+    archetype_guidelines, audit_desktop_completeness,
+    cli_plan::{
+        classify_intent, detect_existing_stack, heuristic_stack_for_prompt,
+        prompt_mentions_lockscreen, prompt_mentions_wallpaper, should_prompt_rofi_bind,
+        stack_override_from_prompt, validate_template_index, BackupMode, ComponentStack, RunPlan,
+    },
+    normalize_stack_values,
+    skill_corpus::SkillCorpus,
+    GenerationWorkflow, HealingWorkflow,
+};
 use dotengine::composer::compose;
-use dotengine::domain::{DesignTemplate, ImagePayload};
+use dotengine::domain::{DesignReferenceSpec, DesignTemplate, ImagePayload, UserPrompt};
 use dotengine::infrastructure::{AiProvider, CredentialStore, GeminiClient, HyprSys, OpenaiClient};
 use dotengine::ports::{AiService, SystemManager};
-use dotengine::ui::{accent, heading, success, info, warning, error, activity};
-use std::io::IsTerminal;
+use dotengine::ui::{accent, error, heading, info, success, warning};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -70,232 +80,204 @@ struct Args {
     /// Custom prompt/aesthetic description for the lockscreen design
     #[arg(long)]
     lockscreen_prompt: Option<String>,
+
+    /// Preview the resolved plan without making any changes.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Refuse to prompt for interactive input and fail fast when a value is missing.
+    #[arg(long)]
+    non_interactive: bool,
+
+    /// Backup policy for existing Hyprland configs before applying changes.
+    #[arg(long, value_enum, default_value_t = BackupMode::Prompt)]
+    backup_mode: BackupMode,
+
+    /// Disable automatic package installation attempts for missing optional dependencies.
+    #[arg(long = "no-auto-install", action = ArgAction::SetTrue)]
+    no_auto_install: bool,
+
+    /// Refresh the cached upstream Hyprland docs into the local user cache before generation.
+    #[arg(long)]
+    refresh_skills: bool,
+
+    /// Change preferred AI provider preference interactively and exit
+    #[arg(long)]
+    change_provider: bool,
+
+    /// Change/update the API key for the selected AI provider (specified by --model or default preferred) and exit
+    #[arg(long)]
+    change_key: bool,
 }
 
-fn heuristic_stack_for_prompt(prompt: &str, template_idx: Option<usize>) -> (String, String, String, String, String) {
-    let predefined_templates = DesignTemplate::get_predefined_library();
-    
-    let resolved_idx = if let Some(idx) = template_idx {
-        if idx < predefined_templates.len() {
-            Some(idx)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
 
-    if let Some(idx) = resolved_idx {
-        let template_name = &predefined_templates[idx].name;
-        if template_name.contains("Glass") {
-            ("ags".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "ags".to_string())
-        } else if template_name.contains("Nord") {
-            ("waybar".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "swaync".to_string())
-        } else if template_name.contains("Cyber") {
-            ("waybar".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "swaync".to_string())
-        } else {
-            ("waybar".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "swaync".to_string())
+fn merge_stack_choice(
+    cli_choice: Option<String>,
+    prompt_choice: &str,
+    existing_choice: Option<String>,
+    heuristic_choice: &str,
+) -> String {
+    cli_choice
+        .or_else(|| {
+            if prompt_choice.is_empty() {
+                None
+            } else {
+                Some(prompt_choice.to_string())
+            }
+        })
+        .or(existing_choice)
+        .unwrap_or_else(|| heuristic_choice.to_string())
+}
+
+async fn load_image_payloads(
+    image: Option<PathBuf>,
+) -> Result<Vec<ImagePayload>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut image_payloads = Vec::new();
+
+    if let Some(img_path) = image {
+        if !img_path.exists() {
+            return Err(format!(
+                "Specified UI mockup image path does not exist: {}",
+                img_path.display()
+            )
+            .into());
         }
-    } else {
-        let lower = prompt.to_lowercase();
-        if lower.contains("blur") || lower.contains("glass") || lower.contains("widget") || lower.contains("glow") {
-            ("ags".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "ags".to_string())
-        } else if lower.contains("minimal") || lower.contains("nord") || lower.contains("arctic") {
-            ("waybar".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "swaync".to_string())
-        } else {
-            ("waybar".to_string(), "rofi".to_string(), "hyprpaper".to_string(), "hyprlock".to_string(), "swaync".to_string())
-        }
+
+        println!(
+            "{}",
+            info(&format!(
+                "Loading design screenshot: {}...",
+                img_path.display()
+            ))
+        );
+        let bytes = std::fs::read(&img_path)?;
+        let encoded_image = ImagePayload::from_reference_image_bytes(&bytes)?;
+        println!(
+            "{}",
+            success(&format!(
+                "Screenshot encoded as {} ({} characters base64).",
+                encoded_image.media_type,
+                encoded_image.base64_data.len()
+            ))
+        );
+        image_payloads.push(encoded_image);
     }
+
+    Ok(image_payloads)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PromptIntent {
-    Edit,
-    Redesign,
+fn load_design_rules() -> Result<SkillCorpus, Box<dyn std::error::Error + Send + Sync>> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    SkillCorpus::load(workspace_root)
 }
 
-#[derive(Default, Debug, Clone)]
-struct StackDetection {
-    panel: Option<String>,
-    launcher: Option<String>,
-    wallpaper: Option<String>,
-    lockscreen: Option<String>,
-    notification: Option<String>,
-    has_any: bool,
-}
-
-#[derive(Default, Debug, Clone)]
-struct StackOverride {
-    panel: Option<String>,
-    launcher: Option<String>,
-    wallpaper: Option<String>,
-    lockscreen: Option<String>,
-    notification: Option<String>,
-}
-
-fn prompt_suggests_redesign(prompt: &str) -> bool {
-    let lower = prompt.to_lowercase();
-    let keywords = [
-        "redesign",
-        "overhaul",
-        "completely different",
-        "from scratch",
-        "fresh",
-        "new theme",
-        "replace everything",
-        "full redesign",
+fn load_hyprland_config_text(home_dir: &Path) -> Option<String> {
+    let candidates = [
+        home_dir.join(".config/hypr/hyprland.conf"),
+        home_dir.join(".config/hypr/hyprland.lua"),
     ];
-    keywords.iter().any(|kw| lower.contains(kw))
+
+    for path in candidates {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if !contents.trim().is_empty() {
+                return Some(contents);
+            }
+        }
+    }
+
+    None
 }
 
-fn prompt_mentions_keybinds(prompt: &str) -> bool {
-    let lower = prompt.to_lowercase();
-    let keywords = ["keybind", "key binding", "shortcut", "hotkey", "bind =", "binds"];
-    keywords.iter().any(|kw| lower.contains(kw))
+fn preview_plan(
+    plan: &RunPlan,
+    provider_label: &str,
+    final_prompt: &str,
+    template_name: Option<&str>,
+    image_count: usize,
+) {
+    println!("\n{}", heading("Dotengine dry-run preview"));
+    println!("  Provider: {}", provider_label);
+    println!("  Interactive: {}", plan.interactive);
+    println!("  Non-interactive: {}", plan.non_interactive);
+    println!("  Backup mode: {:?}", plan.backup_mode);
+    println!(
+        "  Auto install optional deps: {}",
+        if plan.auto_install {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!("  Template index: {:?}", plan.template_index);
+    if let Some(name) = template_name {
+        println!("  Template name: {}", name);
+    }
+    println!("  Prompt intent: {:?}", plan.prompt_intent);
+    println!("  Attached images: {}", image_count);
+    println!("  Final prompt: {}", final_prompt);
+    println!("  Panel: {}", plan.stack.panel);
+    println!("  Launcher: {}", plan.stack.launcher);
+    println!("  Wallpaper: {}", plan.stack.wallpaper);
+    println!("  Lockscreen: {}", plan.stack.lockscreen);
+    println!("  Notifications: {}", plan.stack.notification);
 }
 
-fn prompt_mentions_wallpaper(prompt: &str) -> bool {
-    let lower = prompt.to_lowercase();
-    let keywords = ["wallpaper", "background", "wall paper", "swww", "hyprpaper"];
-    keywords.iter().any(|kw| lower.contains(kw))
-}
-
-fn prompt_mentions_lockscreen(prompt: &str) -> bool {
-    let lower = prompt.to_lowercase();
-    let keywords = ["lockscreen", "lock screen", "hyprlock", "swaylock", "waylock"];
-    keywords.iter().any(|kw| lower.contains(kw))
-}
-
-fn classify_intent(prompt: &str, has_existing_setup: bool) -> PromptIntent {
-    if prompt_suggests_redesign(prompt) {
-        PromptIntent::Redesign
-    } else if has_existing_setup {
-        PromptIntent::Edit
-    } else {
-        PromptIntent::Redesign
-    }
-}
-
-fn stack_override_from_prompt(prompt: &str) -> StackOverride {
-    let lower = prompt.to_lowercase();
-    let mut override_stack = StackOverride::default();
-
-    if lower.contains("waybar") {
-        override_stack.panel = Some("waybar".to_string());
-    } else if lower.contains("ags") || lower.contains("aylur") {
-        override_stack.panel = Some("ags".to_string());
-    } else if lower.contains("quick-shell") || lower.contains("quickshell") {
-        override_stack.panel = Some("quick-shell".to_string());
-    } else if lower.contains("no panel") || lower.contains("without panel") {
-        override_stack.panel = Some("none".to_string());
-    }
-
-    if lower.contains("rofi") {
-        override_stack.launcher = Some("rofi".to_string());
-    } else if lower.contains("no launcher") || lower.contains("without launcher") {
-        override_stack.launcher = Some("none".to_string());
-    }
-
-    if lower.contains("hyprpaper") {
-        override_stack.wallpaper = Some("hyprpaper".to_string());
-    } else if lower.contains("no wallpaper") || lower.contains("without wallpaper") {
-        override_stack.wallpaper = Some("none".to_string());
-    }
-
-    if lower.contains("hyprlock") {
-        override_stack.lockscreen = Some("hyprlock".to_string());
-    } else if lower.contains("swaylock") {
-        override_stack.lockscreen = Some("swaylock".to_string());
-    } else if lower.contains("waylock") {
-        override_stack.lockscreen = Some("waylock".to_string());
-    } else if lower.contains("no lockscreen") || lower.contains("without lockscreen") {
-        override_stack.lockscreen = Some("none".to_string());
-    }
-
-    if lower.contains("swaync") {
-        override_stack.notification = Some("swaync".to_string());
-    } else if lower.contains("dunst") {
-        override_stack.notification = Some("dunst".to_string());
-    } else if lower.contains("no notification") || lower.contains("without notifications") {
-        override_stack.notification = Some("none".to_string());
-    }
-
-    override_stack
-}
-
-fn detect_existing_stack(home_dir: &Path) -> StackDetection {
-    let mut detection = StackDetection::default();
-    let has = |path: &str| home_dir.join(path).exists();
-
-    if has(".config/waybar") {
-        detection.panel = Some("waybar".to_string());
-        detection.has_any = true;
-    } else if has(".config/ags") {
-        detection.panel = Some("ags".to_string());
-        detection.has_any = true;
-    } else if has(".config/quickshell") || has(".config/quick-shell") {
-        detection.panel = Some("quick-shell".to_string());
-        detection.has_any = true;
-    }
-
-    if has(".config/rofi") {
-        detection.launcher = Some("rofi".to_string());
-        detection.has_any = true;
-    }
-
-    if has(".config/hypr/hyprpaper.conf") {
-        detection.wallpaper = Some("hyprpaper".to_string());
-        detection.has_any = true;
-    }
-
-    if has(".config/hypr/hyprlock.conf") {
-        detection.lockscreen = Some("hyprlock".to_string());
-        detection.has_any = true;
-    } else if has(".config/swaylock/config") {
-        detection.lockscreen = Some("swaylock".to_string());
-        detection.has_any = true;
-    } else if has(".config/waylock/config") {
-        detection.lockscreen = Some("waylock".to_string());
-        detection.has_any = true;
-    }
-
-    if has(".config/swaync") {
-        detection.notification = Some("swaync".to_string());
-        detection.has_any = true;
-    } else if has(".config/dunst") {
-        detection.notification = Some("dunst".to_string());
-        detection.has_any = true;
-    }
-
-    detection
-}
-
-async fn perform_pre_run_backup(home_dir: &Path) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+async fn perform_pre_run_backup(
+    home_dir: &Path,
+    backup_mode: BackupMode,
+    interactive: bool,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
     let hypr_config = home_dir.join(".config/hypr");
-    if !hypr_config.exists() {
+    if !hypr_config.exists() || matches!(backup_mode, BackupMode::Off) {
         return Ok(None);
     }
 
-    println!("\n{}", warning("Existing Hyprland configuration detected at ~/.config/hypr."));
-    print!("Would you like to back up your existing desktop configurations before proceeding? [Y/n]: ");
-    use std::io::Write;
-    std::io::stdout().flush()?;
-    let mut choice_input = String::new();
-    std::io::stdin().read_line(&mut choice_input)?;
-    let choice = choice_input.trim().to_lowercase();
-    if choice == "n" || choice == "no" {
-        println!("{}", info("Skipping configuration backup."));
+    if matches!(backup_mode, BackupMode::Prompt) && !interactive {
+        println!(
+            "{} Backup prompt suppressed because the CLI is running non-interactively.",
+            warning("Dotengine")
+        );
         return Ok(None);
+    }
+
+    if matches!(backup_mode, BackupMode::Prompt) {
+        println!(
+            "\n{}",
+            warning("Existing Hyprland configuration detected at ~/.config/hypr.")
+        );
+        print!(
+            "Would you like to back up your existing desktop configurations before proceeding? [Y/n]: "
+        );
+        std::io::stdout().flush()?;
+        let mut choice_input = String::new();
+        std::io::stdin().read_line(&mut choice_input)?;
+        let choice = choice_input.trim().to_lowercase();
+        if choice == "n" || choice == "no" {
+            println!("{}", info("Skipping configuration backup."));
+            return Ok(None);
+        }
     }
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs()
         .to_string();
-    let backup_root = home_dir.join(format!(".local/share/dotengine/backups/pre-run-{}", timestamp));
+    let backup_root = home_dir.join(format!(
+        ".local/share/dotengine/backups/pre-run-{}",
+        timestamp
+    ));
     tokio::fs::create_dir_all(&backup_root).await?;
 
-    let folders = vec!["hypr", "waybar", "rofi", "dunst", "ags", "swaync", "quickshell", "quick-shell"];
+    let folders = vec![
+        "hypr",
+        "waybar",
+        "rofi",
+        "dunst",
+        "ags",
+        "swaync",
+        "quickshell",
+        "quick-shell",
+    ];
     let mut backed_up = Vec::new();
     for folder in folders {
         let src = home_dir.join(".config").join(folder);
@@ -332,120 +314,218 @@ async fn perform_pre_run_backup(home_dir: &Path) -> Result<Option<PathBuf>, Box<
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Enable logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    let interactive =
+        !args.non_interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let auto_install_optional_deps = interactive && !args.no_auto_install;
 
-    // 1. Initialize Ports & Infrastructure System Manager
     let system_manager: Arc<dyn SystemManager> = Arc::new(HyprSys::new());
     let home_dir = system_manager.get_home_directory();
     let existing_stack = detect_existing_stack(&home_dir);
-    let has_existing_setup = existing_stack.has_any;
-    let is_new_user = !has_existing_setup;
-    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let is_new_user = !existing_stack.has_any;
 
-    // Perform pre-run backup if an existing setup is detected
-    let _ = perform_pre_run_backup(&system_manager.get_home_directory()).await;
+    let template_index = validate_template_index(args.template)?;
 
-    // 2. Load the selected AI provider's credential, prompting on its first use.
+    let provider_label = args
+        .model
+        .as_deref()
+        .map(|model| {
+            AiProvider::from_model_name(model).map(|provider| provider.display_name().to_string())
+        })
+        .transpose()?
+        .unwrap_or_else(|| "saved provider".to_string());
+
+    let mut image_payloads = load_image_payloads(args.image.clone()).await?;
+
+    let mut raw_prompt = match args.prompt.clone() {
+        Some(prompt) => prompt,
+        None if interactive => {
+            let composition = compose(
+                String::new(),
+                image_payloads,
+                env!("CARGO_PKG_VERSION").to_string(),
+                provider_label.clone(),
+            )?;
+            image_payloads = composition.images;
+            composition.instruction
+        }
+        None => {
+            return Err(
+                "A prompt is required when running non-interactively. Pass --prompt or enable a terminal session."
+                    .into(),
+            );
+        }
+    };
+
+    let prompt_intent = classify_intent(&raw_prompt, existing_stack.has_any);
+    let prompt_override = stack_override_from_prompt(&raw_prompt);
+    let heuristic_stack = heuristic_stack_for_prompt(&raw_prompt, template_index)?;
+
+    let mut panel_value = merge_stack_choice(
+        args.panel.clone(),
+        if prompt_override.panel.is_empty() {
+            ""
+        } else {
+            &prompt_override.panel
+        },
+        existing_stack.panel.clone(),
+        &heuristic_stack.panel,
+    );
+    let mut launcher_value = merge_stack_choice(
+        args.launcher.clone(),
+        if prompt_override.launcher.is_empty() {
+            ""
+        } else {
+            &prompt_override.launcher
+        },
+        existing_stack.launcher.clone(),
+        &heuristic_stack.launcher,
+    );
+    let mut wallpaper_value = merge_stack_choice(
+        args.wallpaper.clone(),
+        if prompt_override.wallpaper.is_empty() {
+            ""
+        } else {
+            &prompt_override.wallpaper
+        },
+        existing_stack.wallpaper.clone(),
+        &heuristic_stack.wallpaper,
+    );
+    let mut lockscreen_value = merge_stack_choice(
+        args.lockscreen.clone(),
+        if prompt_override.lockscreen.is_empty() {
+            ""
+        } else {
+            &prompt_override.lockscreen
+        },
+        existing_stack.lockscreen.clone(),
+        &heuristic_stack.lockscreen,
+    );
+    let mut notification_value = merge_stack_choice(
+        args.notification.clone(),
+        if prompt_override.notification.is_empty() {
+            ""
+        } else {
+            &prompt_override.notification
+        },
+        existing_stack.notification.clone(),
+        &heuristic_stack.notification,
+    );
+
+    let dry_run_plan = RunPlan {
+        prompt_intent,
+        stack: ComponentStack::new(
+            panel_value.clone(),
+            launcher_value.clone(),
+            wallpaper_value.clone(),
+            lockscreen_value.clone(),
+            notification_value.clone(),
+        ),
+        template_index,
+        template_name: {
+            let templates = DesignTemplate::get_predefined_library();
+            template_index
+                .and_then(|idx| templates.get(idx))
+                .map(|template| template.name.clone())
+        },
+        interactive,
+        dry_run: args.dry_run,
+        non_interactive: args.non_interactive,
+        backup_mode: args.backup_mode,
+        auto_install: auto_install_optional_deps,
+    };
+
+    if dry_run_plan.dry_run {
+        preview_plan(
+            &dry_run_plan,
+            &provider_label,
+            &raw_prompt,
+            dry_run_plan.template_name.as_deref(),
+            image_payloads.len(),
+        );
+        if !image_payloads.is_empty() {
+            println!(
+                "{} Reference-image analysis is skipped in dry-run mode.",
+                warning("Dotengine")
+            );
+        }
+        return Ok(());
+    }
+
     let credentials = CredentialStore::new()?;
-    let provider = credentials.select_provider(args.model.as_deref())?;
+
+    if args.change_provider {
+        let chosen = if let Some(requested) = args.model.as_deref() {
+            let p = AiProvider::from_model_name(requested)?;
+            credentials.change_preferred_provider(p)?;
+            p
+        } else {
+            credentials.prompt_and_save_provider()?
+        };
+        println!("{} Successfully changed preferred default AI provider to {}.", accent("Dotengine"), chosen.display_name());
+
+        if !credentials.has_key(chosen)? {
+            println!("{} No stored API key found for {}. Setup is required.", accent("Dotengine"), chosen.display_name());
+            credentials.prompt_and_save_key(chosen)?;
+            println!("{} Successfully saved the API key for {}.", accent("Dotengine"), chosen.display_name());
+        }
+        return Ok(());
+    }
+
+    if args.change_key {
+        let target_provider = if let Some(requested) = args.model.as_deref() {
+            AiProvider::from_model_name(requested)?
+        } else {
+            credentials.select_provider(None, true)?
+        };
+        credentials.prompt_and_save_key(target_provider)?;
+        println!("{} Successfully updated and saved the API key for {}.", accent("Dotengine"), target_provider.display_name());
+        return Ok(());
+    }
+
+    let provider = credentials.select_provider(args.model.as_deref(), interactive)?;
     println!("{} Using {}.", accent("Provider:"), provider.display_name());
-    let api_key = credentials.get_or_prompt(provider)?;
+    let api_key = credentials.get_or_prompt(provider, interactive)?;
     let ai_service: Arc<dyn AiService> = match provider {
         AiProvider::Openai => Arc::new(OpenaiClient::new(api_key)),
         AiProvider::Gemini => Arc::new(GeminiClient::new(api_key)),
     };
 
-    // 3. Load Design Rules from design-skill.md & Technical Rules from skill.md (contained in project workspace root)
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let design_rules_path = workspace_root.join("design-skill.md");
-    let skill_path = workspace_root.join("skill.md");
-
-    let design_rules = if design_rules_path.exists() {
-        std::fs::read_to_string(&design_rules_path)?
-    } else {
-        tracing::warn!("design-skill.md not found in project root. Falling back to default design specifications.");
-        "Follow general visual balance guidelines, modern spacing, and rounded glassmorphic elements.".to_string()
-    };
-
-    let skill_content = if skill_path.exists() {
-        std::fs::read_to_string(&skill_path)?
-    } else {
-        String::new()
-    };
-
-    let mut combined_rules = if skill_content.is_empty() {
-        design_rules
-    } else {
-        format!(
-            "{}\n\n=== TECHNICAL CONFIGURATION SYNTAX AND CAPABILITIES ===\n{}",
-            design_rules, skill_content
-        )
-    };
-
-    // 4. Handle Design Template Selection
-    let use_composer = args.prompt.is_none();
-    let selected_template = args.template;
-    let mut raw_prompt = args.prompt;
-    let mut image_payloads = Vec::new();
-
-    if raw_prompt.is_none() {
-        raw_prompt = Some(String::new());
-    }
-
-    let mut rofi_bind = args.rofi_bind;
-    let wallpaper_util = args.wallpaper.clone();
-    let lockscreen_util = args.lockscreen.clone();
-    let notification_util = args.notification.clone();
-
-    // 5. Load and base64-encode multimodal image if provided
-    if let Some(img_path) = args.image {
-        if img_path.exists() {
-            println!(
-                "{}",
-                info(&format!("Loading design screenshot: {}...", img_path.display()))
-            );
-            let bytes = std::fs::read(&img_path)?;
-
-            let encoded_image = ImagePayload::from_bytes(&bytes)?;
-            println!(
-                "{}",
-                success(&format!(
-                    "Screenshot encoded as {} ({} characters base64).",
-                    encoded_image.media_type,
-                    encoded_image.base64_data.len()
-                ))
-            );
-            image_payloads.push(encoded_image);
-        } else {
-            return Err(format!(
-                "Specified UI mockup image path does not exist: {}",
-                img_path.display()
-            )
-            .into());
+    if args.refresh_skills && !args.dry_run {
+        match SkillCorpus::refresh_upstream_cache().await {
+            Ok(_) => println!(
+                "{} Refreshed cached upstream Hypr docs for the skill corpus.",
+                accent("Dotengine")
+            ),
+            Err(error) => println!(
+                "{} Could not refresh upstream Hypr docs; continuing with the local corpus: {}",
+                warning("Dotengine"),
+                error
+            ),
         }
+    } else if args.refresh_skills {
+        println!(
+            "{} Skipping upstream skill refresh in dry-run mode.",
+            warning("Dotengine")
+        );
     }
 
-    let final_prompt = if use_composer {
-        let composition = compose(
-            raw_prompt.unwrap_or_else(|| "Nord minimalist desktop".to_string()),
-            image_payloads,
-            env!("CARGO_PKG_VERSION").to_string(),
-            provider.display_name().to_string(),
-        )?;
-        image_payloads = composition.images;
-        composition.instruction
-    } else {
-        raw_prompt.unwrap()
-    };
+    let skill_corpus = load_design_rules()?;
+    let mut combined_rules = skill_corpus.combined();
+    let reference_analysis_rules = skill_corpus.reference_analysis_guidance();
 
-    let system_context = activity(
-        "Inspecting operating environment",
-        system_manager.detect_system_context(),
-    )
-    .await?;
+    let predefined_templates = DesignTemplate::get_predefined_library();
+    let archetype_template_name = template_index
+        .and_then(|idx| predefined_templates.get(idx))
+        .map(|template| template.name.as_str());
+    if let Some(archetype_rules) = archetype_guidelines(&raw_prompt, archetype_template_name) {
+        combined_rules.push_str("\n\n=== DESIGN ARCHETYPE GUIDANCE ===\n");
+        combined_rules.push_str(&archetype_rules);
+    }
+
+    let system_context = system_manager.detect_system_context().await?;
     println!(
         "{} Detected system context successfully.",
         accent("Dotengine")
@@ -466,68 +546,148 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-
-
-    // 6. Determine intent and stack selection
-    let intent = classify_intent(&final_prompt, has_existing_setup);
-    let prompt_override = stack_override_from_prompt(&final_prompt);
-    let (rec_panel, rec_launcher, rec_wallpaper, rec_lockscreen, rec_notification) =
-        heuristic_stack_for_prompt(&final_prompt, selected_template);
-
-    let panel_value = args
-        .panel
-        .clone()
-        .or(prompt_override.panel)
-        .or(existing_stack.panel)
-        .unwrap_or(rec_panel);
-    let launcher_value = args
-        .launcher
-        .clone()
-        .or(prompt_override.launcher)
-        .or(existing_stack.launcher)
-        .unwrap_or(rec_launcher);
-    let wallpaper_value = wallpaper_util
-        .or(prompt_override.wallpaper)
-        .or(existing_stack.wallpaper)
-        .unwrap_or(rec_wallpaper);
-    let lockscreen_value = lockscreen_util
-        .or(prompt_override.lockscreen)
-        .or(existing_stack.lockscreen)
-        .unwrap_or(rec_lockscreen);
-    let notification_value = notification_util
-        .or(prompt_override.notification)
-        .or(existing_stack.notification)
-        .unwrap_or(rec_notification);
-    let mut nm_applet_value = args.nm_applet;
-    let mut blueman_value = args.blueman;
-
-    if use_composer && is_new_user && args.panel.is_none() && args.launcher.is_none() {
-        println!("\n{} Recommended desktop component stack for your design style:", accent("Dotengine"));
-        println!("  - Panel/Shell:        {}", panel_value);
-        println!("  - App Launcher:       {}", launcher_value);
-        println!("  - Wallpaper Switcher: {}", wallpaper_value);
-        println!("  - Lockscreen Tool:    {}", lockscreen_value);
-        println!("  - Notification Panel: {}", notification_value);
-        println!("  - Network Tray Icon:  {}", if nm_applet_value { "enabled" } else { "disabled (recommended: enable)" });
-        println!("  - Bluetooth Tray Icon:{}", if blueman_value { "enabled" } else { "disabled (recommended: enable)" });
-        nm_applet_value = true;
-        blueman_value = true;
-    } else if use_composer && !is_new_user {
+    let mut reference_spec: Option<DesignReferenceSpec> = None;
+    if !image_payloads.is_empty() {
         println!(
-            "\n{} Detected existing desktop setup. Using current stack defaults unless your prompt overrides them.",
+            "{} Analyzing attached reference design screenshots...",
             accent("Dotengine")
+        );
+        let reference_prompt =
+            UserPrompt::new(raw_prompt.clone()).with_images(image_payloads.clone());
+        match ai_service
+            .analyze_design_reference(
+                &reference_prompt,
+                &system_context,
+                &reference_analysis_rules,
+            )
+            .await
+        {
+            Ok(analyzed) => {
+                if analyzed.summary.trim().is_empty() {
+                    println!(
+                        "{} Reference analysis returned no summary. Falling back to prompt-driven generation.",
+                        warning("Dotengine")
+                    );
+                } else {
+                    println!(
+                        "{} Reference design summary: {}",
+                        accent("Dotengine"),
+                        analyzed.summary
+                    );
+                    if let Some(palette) = &analyzed.palette {
+                        println!("    Palette: {}", palette);
+                    }
+                    if !analyzed.startup_commands.is_empty() {
+                        println!("    Startup wiring inferred:");
+                        for command in &analyzed.startup_commands {
+                            println!("      - {}", command);
+                        }
+                    }
+                    reference_spec = Some(analyzed);
+                }
+            }
+            Err(error) => {
+                println!(
+                    "{} Reference analysis failed; continuing with prompt-driven generation: {}",
+                    warning("Dotengine"),
+                    error
+                );
+            }
+        }
+        if raw_prompt.trim().is_empty() {
+            raw_prompt =
+                "Recreate the attached reference desktop setup with a complete Hyprland rice."
+                    .to_string();
+        }
+    }
+
+    if let Some(reference) = reference_spec.as_ref() {
+        let (panel, launcher, wallpaper, lockscreen, notification) =
+            reference.stack.apply_to_values(
+                panel_value.clone(),
+                launcher_value.clone(),
+                wallpaper_value.clone(),
+                lockscreen_value.clone(),
+                notification_value.clone(),
+            );
+        panel_value = panel;
+        launcher_value = launcher;
+        wallpaper_value = wallpaper;
+        lockscreen_value = lockscreen;
+        notification_value = notification;
+    }
+
+    let (panel_value, launcher_value, wallpaper_value, lockscreen_value, notification_value) =
+        normalize_stack_values(
+            panel_value,
+            launcher_value,
+            wallpaper_value,
+            lockscreen_value,
+            notification_value,
+        );
+
+    let resolved_stack = ComponentStack::new(
+        panel_value.clone(),
+        launcher_value.clone(),
+        wallpaper_value.clone(),
+        lockscreen_value.clone(),
+        notification_value.clone(),
+    );
+    let completeness_report = audit_desktop_completeness(
+        &resolved_stack,
+        &existing_stack,
+        &system_context,
+        load_hyprland_config_text(&home_dir).as_deref(),
+    );
+    if !completeness_report.is_clean() {
+        println!("\n{}", warning("Desktop completeness audit"));
+        for issue in &completeness_report.issues {
+            let severity = match issue.severity {
+                dotengine::application::desktop_audit::AuditSeverity::Info => "info",
+                dotengine::application::desktop_audit::AuditSeverity::Warning => "warning",
+            };
+            println!("  - [{}] {}: {}", severity, issue.component, issue.detail);
+        }
+    }
+
+    let run_plan = RunPlan {
+        prompt_intent,
+        stack: resolved_stack,
+        template_index,
+        template_name: {
+            let templates = DesignTemplate::get_predefined_library();
+            template_index
+                .and_then(|idx| templates.get(idx))
+                .map(|template| template.name.clone())
+        },
+        interactive,
+        dry_run: args.dry_run,
+        non_interactive: args.non_interactive,
+        backup_mode: args.backup_mode,
+        auto_install: auto_install_optional_deps,
+    };
+
+    let backup_result = perform_pre_run_backup(&home_dir, args.backup_mode, interactive).await?;
+    if let Some(path) = backup_result {
+        println!(
+            "{} Created backup archive at {} before applying changes.",
+            accent("Dotengine"),
+            path.display()
         );
     }
 
-    let wants_keybind_change = prompt_mentions_keybinds(&final_prompt);
-    let should_prompt_rofi_bind = launcher_value == "rofi"
-        && rofi_bind.is_none()
-        && interactive
-        && (is_new_user || intent == PromptIntent::Redesign || wants_keybind_change);
+    let should_prompt_rofi_bind = should_prompt_rofi_bind(
+        &launcher_value,
+        args.rofi_bind.is_none(),
+        interactive,
+        is_new_user,
+        run_plan.prompt_intent,
+        &raw_prompt,
+    );
 
+    let mut rofi_bind = args.rofi_bind.clone();
     if should_prompt_rofi_bind {
         print!("\nEnter preferred Rofi launch shortcut [default: SUPER, D]: ");
-        use std::io::Write;
         std::io::stdout().flush()?;
         let mut rofi_input = String::new();
         std::io::stdin().read_line(&mut rofi_input)?;
@@ -547,15 +707,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let mut wallpaper_prompt_val = args.wallpaper_prompt.clone().unwrap_or_default();
-    let wants_wallpaper = prompt_mentions_wallpaper(&final_prompt);
     if wallpaper_prompt_val.is_empty()
         && wallpaper_value != "none"
-        && use_composer
         && interactive
-        && (is_new_user || wants_wallpaper)
+        && (is_new_user || prompt_mentions_wallpaper(&raw_prompt))
     {
-        print!("\nDescribe how the wallpaper should look (e.g. 'purple sunset minimalist mountains', or press enter for default): ");
-        use std::io::Write;
+        print!(
+            "\nDescribe how the wallpaper should look (e.g. 'purple sunset minimalist mountains', or press enter for default): "
+        );
         std::io::stdout().flush()?;
         let mut wall_prompt_input = String::new();
         std::io::stdin().read_line(&mut wall_prompt_input)?;
@@ -563,22 +722,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let mut lockscreen_prompt_val = args.lockscreen_prompt.clone().unwrap_or_default();
-    let wants_lockscreen = prompt_mentions_lockscreen(&final_prompt);
     if lockscreen_prompt_val.is_empty()
         && lockscreen_value != "none"
-        && use_composer
         && interactive
-        && (is_new_user || wants_lockscreen)
+        && (is_new_user || prompt_mentions_lockscreen(&raw_prompt))
     {
-        print!("\nDescribe how the lockscreen should look (e.g. 'frosted glass centered login, analog clock', or press enter for default): ");
-        use std::io::Write;
+        print!(
+            "\nDescribe how the lockscreen should look (e.g. 'frosted glass centered login, analog clock', or press enter for default): "
+        );
         std::io::stdout().flush()?;
         let mut lock_prompt_input = String::new();
         std::io::stdin().read_line(&mut lock_prompt_input)?;
         lockscreen_prompt_val = lock_prompt_input.trim().to_string();
     }
 
-    // Hyprland version instructions
     let mut hyprland_version_note = String::new();
     if interactive {
         if let Some((version, uses_lua)) = system_context
@@ -589,12 +746,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             hyprland_version_note = format!(
                 "\nHYPRLAND VERSION DETECTED: {}. Use {} configuration syntax.",
                 version,
-                if uses_lua { "Lua (hyprland.lua)" } else { "Hyprlang (hyprland.conf)" }
+                if uses_lua {
+                    "Lua (hyprland.lua)"
+                } else {
+                    "Hyprlang (hyprland.conf)"
+                }
             );
         } else {
-            println!("\n{} Could not detect Hyprland version.", accent("Dotengine"));
-            print!("Do you know your Hyprland version? (e.g. 0.55.1) [leave blank to use hyprlang]: ");
-            use std::io::Write;
+            println!(
+                "\n{} Could not detect Hyprland version.",
+                accent("Dotengine")
+            );
+            print!(
+                "Do you know your Hyprland version? (e.g. 0.55.1) [leave blank to use hyprlang]: "
+            );
             std::io::stdout().flush()?;
             let mut version_input = String::new();
             std::io::stdin().read_line(&mut version_input)?;
@@ -615,10 +780,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 hyprland_version_note = format!(
                     "\nHYPRLAND VERSION PROVIDED: {}. Use {} configuration syntax.",
                     version_input,
-                    if uses_lua { "Lua (hyprland.lua)" } else { "Hyprlang (hyprland.conf)" }
+                    if uses_lua {
+                        "Lua (hyprland.lua)"
+                    } else {
+                        "Hyprlang (hyprland.conf)"
+                    }
                 );
             } else {
-                hyprland_version_note = "\nHYPRLAND VERSION UNKNOWN: default to Hyprlang (hyprland.conf) syntax.".to_string();
+                hyprland_version_note =
+                    "\nHYPRLAND VERSION UNKNOWN: default to Hyprlang (hyprland.conf) syntax."
+                        .to_string();
             }
         }
     }
@@ -627,21 +798,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         combined_rules.push_str(&hyprland_version_note);
     }
 
-    // 7. Construct and execute workflows (unlimited max self-healing retries)
-    let healing_workflow = HealingWorkflow::new(ai_service.clone(), system_manager.clone(), usize::MAX);
+    let healing_workflow =
+        HealingWorkflow::new(ai_service.clone(), system_manager.clone(), 5);
     let generation_workflow =
         GenerationWorkflow::new(ai_service.clone(), system_manager.clone(), healing_workflow);
 
-    println!(
-        "\n{}",
-        info("Starting dotfile generation pipeline...")
-    );
+    println!("\n{}", info("Starting dotfile generation pipeline..."));
     match generation_workflow
         .execute(
-            final_prompt,
+            raw_prompt,
             image_payloads,
-            selected_template,
+            template_index,
             &combined_rules,
+            reference_spec.as_ref(),
             rofi_bind_value.as_deref(),
             &panel_value,
             &launcher_value,
@@ -650,8 +819,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &wallpaper_prompt_val,
             &lockscreen_prompt_val,
             &notification_value,
-            nm_applet_value,
-            blueman_value,
+            args.nm_applet,
+            args.blueman,
+            auto_install_optional_deps,
         )
         .await
     {
@@ -671,15 +841,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 println!("  1. Preload a new wallpaper image into cache:");
                 println!("     hyprctl hyprpaper preload \"/path/to/your/wallpaper.png\"");
                 println!("  2. Apply the loaded wallpaper to your monitor:");
-                println!("     hyprctl hyprpaper wallpaper \"monitor,/path/to/your/wallpaper.png\"");
+                println!(
+                    "     hyprctl hyprpaper wallpaper \"monitor,/path/to/your/wallpaper.png\""
+                );
                 println!("  3. Add the preload and wallpaper lines to ~/.config/hypr/hyprpaper.conf to persist them.");
             }
         }
         Err(e) => {
-            println!(
-                "\n{}",
-                error(&format!("Critical workflow failure: {}", e))
-            );
+            println!("\n{}", error(&format!("Critical workflow failure: {}", e)));
             std::process::exit(1);
         }
     }

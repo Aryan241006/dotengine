@@ -1,6 +1,6 @@
 [package]
 name = "dotengine"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "A clean-architecture Hyprland AI Configuration and Self-Healing CLI Agent"
 
@@ -29,4 +29,4 @@ env_logger = "0.11"
 
 # Encoding/Decoding
 base64 = "0.22"
-
+image = { version = "0.24", features = ["png", "jpeg", "bmp", "gif"] }

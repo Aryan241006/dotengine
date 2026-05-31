@@ -1,5 +1,7 @@
-use crate::application::healing_workflow::HealingWorkflow;
-use crate::domain::{ConfigFile, DesignTemplate, ImagePayload, UserPrompt};
+use crate::application::{
+    archetype_guidelines, archetype_recommendation_lines, healing_workflow::HealingWorkflow,
+};
+use crate::domain::{ConfigFile, DesignReferenceSpec, DesignTemplate, ImagePayload, UserPrompt};
 use crate::ports::{AiService, SystemManager};
 use crate::ui::{accent, activity, heading};
 use std::sync::Arc;
@@ -30,37 +32,20 @@ impl GenerationWorkflow {
             println!("Selected Design Profile: {}", template.name);
             println!("Recommended Stack: {:?}", template.recommended_stack);
             println!("\nRecommendation:");
-            if template.name.contains("Glass") {
-                println!("- [RECOMMENDED] Aylurs GTK Shell (ags): Essential for fluid javascript-defined glassmorphic widgets.");
-                println!(
-                    "- [RECOMMENDED] rofi: Centered application menus with custom rasi overlays."
-                );
-            } else if template.name.contains("Nord") {
-                println!("- [RECOMMENDED] Waybar: Extremely fast, lightweight status panel configured via standard CSS.");
-                println!("- [RECOMMENDED] dunst: Minimalist notification daemon.");
-                println!("- [RECOMMENDED] rofi: Rofi for rapid app launcher searches.");
+            if let Some(lines) = archetype_recommendation_lines(prompt_text, Some(&template.name)) {
+                for line in lines {
+                    println!("{}", line);
+                }
             } else {
-                println!("- [RECOMMENDED] quick-shell: QML-powered high fidelity widgets.");
-                println!("- [RECOMMENDED] dunst: Fast notifications overlay.");
+                for item in &template.recommended_stack {
+                    println!("- [RECOMMENDED] {}", item);
+                }
             }
         } else {
-            // Contextual heuristic checks
-            let lower = prompt_text.to_lowercase();
-            if lower.contains("blur")
-                || lower.contains("glass")
-                || lower.contains("widget")
-                || lower.contains("glow")
-            {
-                println!("Target Aesthetic: Highly fluid/modern glassmorphism.");
-                println!("- [RECOMMENDED] Aylurs GTK Shell (ags): Highly recommended to implement premium CSS blur filters and stateful panels.");
-                println!("- [RECOMMENDED] rofi: Centered app selector menus.");
-            } else if lower.contains("minimal")
-                || lower.contains("light")
-                || lower.contains("arctic")
-            {
-                println!("Target Aesthetic: Lightweight minimalist tiling.");
-                println!("- [RECOMMENDED] Waybar: Very low overhead, easily styled with custom CSS sheets.");
-                println!("- [RECOMMENDED] dunst: Simple notification system.");
+            if let Some(lines) = archetype_recommendation_lines(prompt_text, None) {
+                for line in lines {
+                    println!("{}", line);
+                }
             } else {
                 println!("Target Aesthetic: General custom.");
                 println!("- [RECOMMENDED] Waybar & rofi: Traditional highly configurable Hyprland workspace combo.");
@@ -75,6 +60,7 @@ impl GenerationWorkflow {
         image_payloads: Vec<ImagePayload>,
         selected_template_index: Option<usize>,
         design_rules_content: &str,
+        reference_spec: Option<&DesignReferenceSpec>,
         rofi_bind: Option<&str>,
         panel_util: &str,
         launcher_util: &str,
@@ -85,7 +71,40 @@ impl GenerationWorkflow {
         notification_util: &str,
         enable_nm_applet: bool,
         enable_blueman: bool,
+        auto_install_optional_deps: bool,
     ) -> Result<Vec<ConfigFile>, Box<dyn std::error::Error + Send + Sync>> {
+        // Intercept Direct Actions (e.g. Set Wallpaper)
+        let prompt_intent = crate::application::cli_plan::classify_intent(&raw_prompt, true);
+        if prompt_intent == crate::application::cli_plan::PromptIntent::Action
+            && crate::application::cli_plan::prompt_is_direct_action(&raw_prompt) {
+                if let Some(extracted_path) = extract_path_from_prompt(&raw_prompt) {
+                    println!("\n{} Executing direct action: Set wallpaper to '{}'", accent("Dotengine"), extracted_path);
+                    let normalized = normalize_path(&extracted_path);
+                    
+                    let content = format!(
+                        "preload = {}\nwallpaper {{\n    monitor = \n    path = {}\n    fit_mode = cover\n}}\n",
+                        normalized.display(),
+                        normalized.display()
+                    );
+                    
+                    let config_file = ConfigFile {
+                        relative_path: std::path::PathBuf::from(".config/hypr/hyprpaper.conf"),
+                        content: content.clone(),
+                    };
+                    
+                    self.system_manager.write_config_file(&config_file).await?;
+                    
+                    self.system_manager.verify_and_reload(
+                        std::slice::from_ref(&config_file),
+                        normalized.to_str(),
+                    ).await
+                    .map_err(|e| Box::new(std::io::Error::other(format!("{:?}", e))) as Box<dyn std::error::Error + Send + Sync>)?;
+                    
+                    println!("{} Wallpaper change successfully completed.", accent("Dotengine"));
+                    return Ok(vec![config_file]);
+                }
+            }
+
         let predefined = DesignTemplate::get_predefined_library();
         let mut custom_guidelines = None;
         let mut chosen_template = None;
@@ -107,6 +126,28 @@ impl GenerationWorkflow {
                     template.recommended_gaps_out,
                     if template.dynamic_animations { "Springy / Fluid (wind curve)" } else { "Classic" }
                 ));
+                if let Some(archetype) = archetype_guidelines(&template.name, Some(&template.name))
+                {
+                    if let Some(current) = custom_guidelines.take() {
+                        custom_guidelines = Some(format!("{}\n{}", current, archetype));
+                    } else {
+                        custom_guidelines = Some(archetype);
+                    }
+                }
+            }
+        }
+
+        if let Some(reference) = reference_spec {
+            println!(
+                "{} Reference design extracted from screenshot: {}",
+                accent("Dotengine"),
+                reference.summary
+            );
+            if !reference.startup_commands.is_empty() {
+                println!("{} Reference startup wiring:", accent("Dotengine"));
+                for command in &reference.startup_commands {
+                    println!("    - {}", command);
+                }
             }
         }
 
@@ -129,6 +170,8 @@ impl GenerationWorkflow {
         }
         if lockscreen_util != "none" {
             tools_to_check.push(lockscreen_util.to_string());
+            tools_to_check.push("hypridle".to_string());
+            tools_to_check.push("wlogout".to_string());
         }
         if notification_util != "none" {
             tools_to_check.push(notification_util.to_string());
@@ -154,9 +197,21 @@ impl GenerationWorkflow {
                     accent("Dotengine"),
                     tool
                 );
-                // Prompt auto-install
-                if let Err(e) = self.system_manager.install_package(&tool).await {
-                    println!("{} Installation skipped: {}", accent("Dotengine"), e);
+                if auto_install_optional_deps {
+                    if let Err(e) = self.system_manager.install_package(&tool).await {
+                        println!(
+                            "{} Could not install optional dependency '{}': {}. Continuing without it.",
+                            crate::ui::warning("Dotengine"),
+                            tool,
+                            e
+                        );
+                    }
+                } else {
+                    println!(
+                        "{} Skipping optional install for '{}'. Continue with the current desktop stack or install it manually later.",
+                        crate::ui::warning("Dotengine"),
+                        tool
+                    );
                 }
             } else {
                 println!(
@@ -168,75 +223,60 @@ impl GenerationWorkflow {
         }
 
         // Check Font Awesome installation in system font cache
-        let font_installed = system_context.package_status.get("fonts-font-awesome").copied().unwrap_or(false);
+        let font_installed = system_context
+            .package_status
+            .get("fonts-font-awesome")
+            .copied()
+            .unwrap_or(false);
         if !font_installed {
             println!(
-                "{} Required icon glyph font '{}' is missing from the system font cache.",
-                accent("Dotengine"),
-                "FontAwesome"
+                "{} Required icon glyph font 'FontAwesome' is missing from the system font cache.",
+                accent("Dotengine")
             );
-            if let Err(e) = self.system_manager.install_package("fonts-font-awesome").await {
-                println!("{} Font installation skipped: {}", accent("Dotengine"), e);
+            if auto_install_optional_deps {
+                if let Err(e) = self
+                    .system_manager
+                    .install_package("fonts-font-awesome")
+                    .await
+                {
+                    println!(
+                        "{} Could not install FontAwesome automatically: {}. Continuing with fallback glyphs.",
+                        crate::ui::warning("Dotengine"),
+                        e
+                    );
+                }
+            } else {
+                println!(
+                    "{} FontAwesome is unavailable. Continuing with fallback glyphs and lower-fidelity icons.",
+                    crate::ui::warning("Dotengine")
+                );
             }
         } else {
             println!(
-                "{} Verified prerequisite '{}' is installed.",
-                accent("Dotengine"),
-                "FontAwesome"
+                "{} Verified prerequisite 'FontAwesome' is installed.",
+                accent("Dotengine")
             );
         }
 
         // Check Nerd Font installation in system font cache
-        let nerd_font_installed = system_context.package_status.get("fonts-nerd-font").copied().unwrap_or(false);
+        let nerd_font_installed = system_context
+            .package_status
+            .get("fonts-nerd-font")
+            .copied()
+            .unwrap_or(false);
         if !nerd_font_installed {
             println!(
-                "{} Required icon glyph font '{}' is missing from the system font cache.",
-                accent("Dotengine"),
-                "JetBrainsMono Nerd Font"
+                "{} Required icon glyph font 'JetBrainsMono Nerd Font' is missing from the system font cache.",
+                accent("Dotengine")
             );
-            println!("{} Recommending automatic download and installation of JetBrainsMono Nerd Font...", accent("Dotengine"));
-            print!("Would you like to install JetBrainsMono Nerd Font now? [Y/n]: ");
-            let mut font_choice = String::new();
-            if std::io::stdin().read_line(&mut font_choice).is_ok() {
-                let trimmed = font_choice.trim().to_lowercase();
-                if trimmed != "n" && trimmed != "no" {
-                    println!("{} Downloading JetBrainsMono Nerd Font...", accent("Dotengine"));
-                    let home = self.system_manager.get_home_directory();
-                    let font_dir = home.join(".local/share/fonts");
-                    let _ = std::fs::create_dir_all(&font_dir);
-                    
-                    // Run a standard curl command to download it
-                    let download_status = tokio::process::Command::new("curl")
-                        .arg("-fsSL")
-                        .arg("https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf")
-                        .arg("-o")
-                        .arg(font_dir.join("JetBrainsMonoNerdFont-Regular.ttf"))
-                        .status()
-                        .await;
-                        
-                    if let Ok(status) = download_status {
-                        if status.success() {
-                            let _ = tokio::process::Command::new("fc-cache")
-                                .arg("-f")
-                                .arg("-v")
-                                .status()
-                                .await;
-                            println!("{}", crate::ui::success("JetBrainsMono Nerd Font installed successfully."));
-                        } else {
-                            println!("{}", crate::ui::error("Failed to download JetBrainsMono Nerd Font via curl."));
-                        }
-                    } else {
-                        println!("{}", crate::ui::error("Failed to execute curl."));
-                    }
-                } else {
-                    println!("{}", crate::ui::info("Font installation skipped. Icons may not render correctly."));
-                }
-            }
+            println!(
+                "{} JetBrainsMono Nerd Font is optional. Continuing without network downloads; icon coverage may degrade in terminal previews.",
+                crate::ui::warning("Dotengine")
+            );
         } else {
             println!(
-                "{} Verified prerequisite '{}' is installed.",
-                accent("Dotengine"),
-                "JetBrainsMono Nerd Font"
+                "{} Verified prerequisite 'JetBrainsMono Nerd Font' is installed.",
+                accent("Dotengine")
             );
         }
 
@@ -259,10 +299,8 @@ impl GenerationWorkflow {
             let path = std::path::Path::new(path_str);
             if let Ok(content) = self.system_manager.read_config_file(path).await {
                 if !content.trim().is_empty() {
-                    existing_configs_context.push_str(&format!(
-                        "\n--- FILE: {} ---\n{}\n",
-                        path_str, content
-                    ));
+                    existing_configs_context
+                        .push_str(&format!("\n--- FILE: {} ---\n{}\n", path_str, content));
                 }
             }
         }
@@ -271,12 +309,26 @@ impl GenerationWorkflow {
             let editing_rule = format!(
                 "\n=== CURRENT ACTIVE CONFIGURATION CONTEXT ===\n\
                  The host system already has the following active configurations:\n{}\n\
-                 SMART EDITING INSTRUCTIONS:\n\
-                 1. If the user's prompt is an edit, tweak, or incremental modification of their existing setup (e.g. changing border sizes, adjusting gaps, adding keyboard binds, changing Waybar module alignments, or swapping color themes), you MUST preserve their existing configuration framework, monitor setups, and active custom layouts. Only make the precise changes requested on top of these active files, returning the complete updated configuration contents.\n\
-                 2. Do NOT discard their working configuration unless they explicitly request a complete redesign from scratch.",
+                 SMART EDITING & RICE EXPANSION INSTRUCTIONS:\n\
+                 1. If the user's prompt is an edit, tweak, or incremental modification of their existing setup (e.g. changing hotkeys/keybindings, adjusting gaps, changing font sizes, or swapping colors), you MUST ONLY modify the specific lines or files affected. Leave all other files and settings completely untouched!\n\
+                 2. If the user asks to change or modify keybindings or hotkeys (e.g. changing the launcher binding to SUPER, R or adding a terminal bind), locate the specific 'bind = ...' rules in hyprland.conf and replace or append only those targeted binds. Do NOT modify or remove other unrelated hotkeys or window behaviors.\n\
+                 3. If the user asks to expand their rice (e.g. adding a new module like CPU, memory, or battery to Waybar, or adding a new styling element to Rofi), you must insert the new module seamlessly into the active layout JSON/config and append the new CSS style classes to the bottom of the style file, preserving all existing layout and custom color theme configurations.\n\
+                 4. Do NOT output or modify files that are not requested. If the user only asked to tweak Waybar, only output waybar/config and/or waybar/style.css. Do NOT output dunst, swaync, rofi, or hyprland.conf unless they are affected. Only return the files that actually contain changes.\n\
+                 5. Do NOT discard their working configuration unless they explicitly request a complete redesign from scratch.",
                 existing_configs_context
             );
             final_guidelines.push_str(&editing_rule);
+        }
+
+        if let Some(reference) = reference_spec {
+            final_guidelines.push('\n');
+            final_guidelines.push_str(&reference.to_guidelines());
+            final_guidelines.push_str(
+                "\nREFERENCE DESIGN RULES:\n\
+                 1. Recreate the screenshot's visual language and startup behavior, not a pixel-perfect clone.\n\
+                 2. If the screenshot implies a fuller setup, wire the necessary exec-once, portal, wallpaper, lockscreen, and tray behaviors so the rice feels complete.\n\
+                 3. Use the extracted stack hints and completion notes to fill any missing pieces for a barebones Hyprland install.",
+            );
         }
 
         // Append panel instructions
@@ -338,7 +390,10 @@ impl GenerationWorkflow {
             );
             final_guidelines.push_str(&wallpaper_rule);
             if !wallpaper_prompt.trim().is_empty() {
-                let wall_desc = format!(" Wallpaper design preference/aesthetic instructions: {}", wallpaper_prompt);
+                let wall_desc = format!(
+                    " Wallpaper design preference/aesthetic instructions: {}",
+                    wallpaper_prompt
+                );
                 final_guidelines.push_str(&wall_desc);
             }
         }
@@ -357,7 +412,10 @@ impl GenerationWorkflow {
             );
             final_guidelines.push_str(&lockscreen_rule);
             if !lockscreen_prompt.trim().is_empty() {
-                let lock_desc = format!(" Lockscreen design preference/aesthetic instructions: {}", lockscreen_prompt);
+                let lock_desc = format!(
+                    " Lockscreen design preference/aesthetic instructions: {}",
+                    lockscreen_prompt
+                );
                 final_guidelines.push_str(&lock_desc);
             }
         }
@@ -380,6 +438,24 @@ impl GenerationWorkflow {
                              font-family: \"JetBrainsMono Nerd Font\", \"Font Awesome 6 Free\", \"FontAwesome\", sans-serif;\n\
                           2. Utilize standard, widely compatible unicode glyphs/icons for Waybar modules (e.g. standard battery/wifi/sound icons) to avoid raw system-unsupported unicode tofu blocks.";
         final_guidelines.push_str(icon_rule);
+
+        // Append multimedia & function key (Fn key) mapping instructions
+        let multimedia_bind_rule = "\nMULTIMEDIA & FUNCTION KEY MAPPING RULES:\n\
+                                    When creating or modifying '.config/hypr/hyprland.conf', you MUST automatically include standard bindings for function keys (Fn keys) to support audio, brightness, and media control. Use the following robust rules:\n\
+                                    1. Volume Control (use binde for repeat, and wire to wpctl or pactl):\n\
+                                       binde = , XF86AudioRaiseVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+\n\
+                                       binde = , XF86AudioLowerVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-\n\
+                                       bind = , XF86AudioMute, exec, wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle\n\
+                                       bind = , XF86AudioMicMute, exec, wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle\n\
+                                    2. Backlight/Brightness Control (use binde for repeat, and wire to brightnessctl or light):\n\
+                                       binde = , XF86MonBrightnessUp, exec, brightnessctl set 5%+\n\
+                                       binde = , XF86MonBrightnessDown, exec, brightnessctl set 5%-\n\
+                                    3. Media Player Control (wire to playerctl):\n\
+                                       bind = , XF86AudioPlay, exec, playerctl play-pause\n\
+                                       bind = , XF86AudioNext, exec, playerctl next\n\
+                                       bind = , XF86AudioPrev, exec, playerctl previous\n\
+                                    Ensure these are clearly commented and added to the binds section.";
+        final_guidelines.push_str(multimedia_bind_rule);
 
         let mut prompt = UserPrompt::new(raw_prompt).with_guidelines(final_guidelines);
         if !image_payloads.is_empty() {
@@ -416,9 +492,10 @@ impl GenerationWorkflow {
         }
 
         // Execute reload / verification
+        let wallpaper_query = reference_spec.and_then(|spec| spec.wallpaper_description.as_deref());
         match activity(
             "Validating and reloading Hyprland",
-            self.system_manager.verify_and_reload(&generated_configs),
+            self.system_manager.verify_and_reload(&generated_configs, wallpaper_query),
         )
         .await
         {
@@ -459,8 +536,11 @@ impl GenerationWorkflow {
         for attempt in 1..=MAX_RETRIES {
             let generated_configs = activity(
                 "Generating desktop configuration",
-                self.ai_service
-                    .generate_config(&retry_prompt, system_context, design_rules_content),
+                self.ai_service.generate_config(
+                    &retry_prompt,
+                    system_context,
+                    design_rules_content,
+                ),
             )
             .await?;
 
@@ -478,7 +558,10 @@ impl GenerationWorkflow {
                 let mut guidelines = retry_prompt.custom_guidelines.clone().unwrap_or_default();
                 guidelines.push_str("\n\nCRITICAL REGENERATION RULES:\n");
                 for error in errors {
-                    guidelines.push_str(&format!("- Fix this error and do not reintroduce it: {}\n", error));
+                    guidelines.push_str(&format!(
+                        "- Fix this error and do not reintroduce it: {}\n",
+                        error
+                    ));
                 }
                 retry_prompt.custom_guidelines = Some(guidelines);
                 continue;
@@ -514,4 +597,32 @@ fn validate_generated_configs(configs: &[ConfigFile]) -> Result<(), Vec<String>>
     } else {
         Err(errors)
     }
+}
+
+fn extract_path_from_prompt(prompt: &str) -> Option<String> {
+    let prompt = prompt.replace('\'', "\"");
+    if let Some(start) = prompt.find('"') {
+        if let Some(end) = prompt[start + 1..].find('"') {
+            return Some(prompt[start + 1..start + 1 + end].trim().to_string());
+        }
+    }
+    for word in prompt.split_whitespace() {
+        if word.starts_with('/') || word.starts_with('~') || word.contains('.') && word.contains('/') {
+            return Some(word.trim().to_string());
+        }
+    }
+    None
+}
+
+fn normalize_path(path: &str) -> std::path::PathBuf {
+    let path_str = if path.starts_with('~') {
+        if let Some(home) = std::env::var_os("HOME") {
+            path.replacen('~', &home.to_string_lossy(), 1)
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+    std::path::PathBuf::from(path_str)
 }

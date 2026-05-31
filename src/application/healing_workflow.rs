@@ -87,7 +87,7 @@ impl HealingWorkflow {
 
         match activity(
             "Verifying corrected configuration",
-            self.system_manager.verify_and_reload(&repaired_configs),
+            self.system_manager.verify_and_reload(&repaired_configs, None),
         )
         .await
         {

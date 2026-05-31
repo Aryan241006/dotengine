@@ -29,7 +29,10 @@ fn compose_line_mode(
     version: String,
     provider: String,
 ) -> Result<Composition, Box<dyn std::error::Error + Send + Sync>> {
-    println!("\x1b[1;38;2;120;138;62mDOTENGINE\x1b[0m (v{}) | Provider: {}", version, provider);
+    println!(
+        "\x1b[1;38;2;120;138;62mDOTENGINE\x1b[0m (v{}) | Provider: {}",
+        version, provider
+    );
     println!("{}", heading("Dotengine prompt"));
     if !initial_text.is_empty() {
         println!("Suggested prompt: {}", initial_text);
@@ -56,6 +59,7 @@ struct Composer {
     notice: String,
     version: String,
     provider: String,
+    selected_suggestion: Option<usize>,
 }
 
 impl Composer {
@@ -68,11 +72,12 @@ impl Composer {
             notice: String::new(),
             version,
             provider,
+            selected_suggestion: None,
         }
     }
 
     fn run(mut self) -> Result<Composition, Box<dyn std::error::Error + Send + Sync>> {
-        let _terminal = RawTerminal::enter()?;
+        let mut _terminal = RawTerminal::enter()?;
         self.redraw()?;
 
         let mut stdin = io::stdin().lock();
@@ -80,13 +85,120 @@ impl Composer {
             let byte = read_byte(&mut stdin)?;
             match byte {
                 b'\r' | b'\n' => {
-                    if self.text.trim().is_empty() {
+                    let trimmed = self.text.trim();
+                    let mut suggestion_cmd = None;
+                    if self.text.starts_with('/') {
+                        let matches = get_matching_commands(&self.text);
+                        if let Some(idx) = self.selected_suggestion {
+                            if idx < matches.len() {
+                                suggestion_cmd = Some(matches[idx].0.to_string());
+                            }
+                        }
+                    }
+
+                    let command_str = if let Some(ref cmd) = suggestion_cmd {
+                        cmd.as_str()
+                    } else {
+                        trimmed
+                    };
+
+                    if command_str.starts_with('/') {
+                        let parts: Vec<&str> = command_str.split_whitespace().collect();
+                        let command = parts[0];
+                        match command {
+                            "/help" => {
+                                self.text.clear();
+                                self.cursor = 0;
+                                self.selected_suggestion = None;
+                                self.notice = "Commands: /help (show help), /provider (change provider), /change-key (update key)".to_string();
+                                self.redraw()?;
+                                continue;
+                            }
+                            "/provider" | "/change-provider" => {
+                                drop(stdin);
+                                drop(_terminal);
+                                print!("\r\x1b[J");
+                                io::stdout().flush()?;
+
+                                if let Ok(credentials) = crate::infrastructure::CredentialStore::new() {
+                                    if let Ok(new_prov) = credentials.prompt_and_save_provider() {
+                                        self.provider = new_prov.display_name().to_string();
+                                        self.notice = format!("AI provider changed to {}.", self.provider);
+
+                                        if let Ok(false) = credentials.has_key(new_prov) {
+                                            println!("\nNo stored API key found for {}. Setup is required.", new_prov.display_name());
+                                            if credentials.prompt_and_save_key(new_prov).is_ok() {
+                                                self.notice = format!("AI provider changed to {} and API key configured.", self.provider);
+                                            } else {
+                                                self.notice = format!("AI provider changed to {}, but API key was not configured.", self.provider);
+                                            }
+                                        }
+                                    } else {
+                                        self.notice = "AI provider change cancelled.".to_string();
+                                    }
+                                } else {
+                                    self.notice = "Failed to load credentials store.".to_string();
+                                }
+
+                                _terminal = RawTerminal::enter()?;
+                                stdin = io::stdin().lock();
+                                self.text.clear();
+                                self.cursor = 0;
+                                self.selected_suggestion = None;
+                                self.redraw()?;
+                                continue;
+                            }
+                            "/change-key" => {
+                                drop(stdin);
+                                drop(_terminal);
+                                print!("\r\x1b[J");
+                                io::stdout().flush()?;
+
+                                if let Ok(credentials) = crate::infrastructure::CredentialStore::new() {
+                                    let current_prov = if let Ok(p) = credentials.select_provider(None, false) {
+                                        p
+                                    } else {
+                                        crate::infrastructure::AiProvider::Gemini
+                                    };
+                                    if credentials.prompt_and_save_key(current_prov).is_ok() {
+                                        self.notice = format!("API key for {} successfully updated.", current_prov.display_name());
+                                    } else {
+                                        self.notice = "API key update failed.".to_string();
+                                    }
+                                } else {
+                                    self.notice = "Failed to load credentials store.".to_string();
+                                }
+
+                                _terminal = RawTerminal::enter()?;
+                                stdin = io::stdin().lock();
+                                self.text.clear();
+                                self.cursor = 0;
+                                self.selected_suggestion = None;
+                                self.redraw()?;
+                                continue;
+                            }
+                            _ => {
+                                self.notice = format!("Unknown command: {}. Type /help for options.", command);
+                                self.selected_suggestion = None;
+                                self.redraw()?;
+                                continue;
+                            }
+                        }
+                    }
+
+                    if self.text.trim().is_empty() && self.images.is_empty() {
                         self.notice = "Enter a prompt before submitting.".to_string();
                         self.redraw()?;
                         continue;
                     }
                     print!("\r\x1b[J");
                     io::stdout().flush()?;
+                    if self.text.trim().is_empty() && !self.images.is_empty() {
+                        return Ok(Composition {
+                            instruction: String::new(),
+                            images: self.images,
+                        });
+                    }
                     return Ok(Composition {
                         instruction: self.text.trim().to_string(),
                         images: self.images,
@@ -106,16 +218,19 @@ impl Composer {
                         self.text.drain(position..self.cursor);
                         self.cursor = position;
                     }
+                    self.selected_suggestion = None;
                     self.redraw()?;
                 }
                 21 => {
                     self.text.clear();
                     self.cursor = 0;
                     self.notice = "Prompt cleared.".to_string();
+                    self.selected_suggestion = None;
                     self.redraw()?;
                 }
                 11 => {
                     self.text.truncate(self.cursor);
+                    self.selected_suggestion = None;
                     self.redraw()?;
                 }
                 23 => {
@@ -137,22 +252,11 @@ impl Composer {
                         self.text.drain(position..self.cursor);
                         self.cursor = position;
                     }
+                    self.selected_suggestion = None;
                     self.redraw()?;
                 }
                 18 => {
-                    if self.images.is_empty() {
-                        self.notice = "No attached images to remove.".to_string();
-                    } else {
-                        self.images.pop();
-                        if self.images.is_empty() {
-                            self.notice = "Removed all attached images.".to_string();
-                        } else {
-                            self.notice = format!(
-                                "Removed last image. {} remaining.",
-                                self.images.len()
-                            );
-                        }
-                    }
+                    self.remove_last_image();
                     self.redraw()?;
                 }
                 22 => {
@@ -171,8 +275,35 @@ impl Composer {
                         let pasted = read_bracketed_paste(&mut stdin)?;
                         self.insert_text(&pasted);
                         self.notice = "Pasted text into prompt.".to_string();
+                        self.selected_suggestion = None;
                         self.redraw()?;
                     }
+                    Some("[A") // Up Arrow
+                        if self.text.starts_with('/') => {
+                            let matches = get_matching_commands(&self.text);
+                            if !matches.is_empty() {
+                                let len = matches.len();
+                                self.selected_suggestion = match self.selected_suggestion {
+                                    None => Some(len - 1),
+                                    Some(idx) => Some((idx + len - 1) % len),
+                                };
+                                self.redraw()?;
+                                continue;
+                            }
+                        }
+                    Some("[B") // Down Arrow
+                        if self.text.starts_with('/') => {
+                            let matches = get_matching_commands(&self.text);
+                            if !matches.is_empty() {
+                                let len = matches.len();
+                                self.selected_suggestion = match self.selected_suggestion {
+                                    None => Some(0),
+                                    Some(idx) => Some((idx + 1) % len),
+                                };
+                                self.redraw()?;
+                                continue;
+                            }
+                        }
                     Some("[D") => {
                         if let Some((position, _)) = self.text[..self.cursor].char_indices().last()
                         {
@@ -206,6 +337,7 @@ impl Composer {
                 value if value >= 32 => {
                     let character = read_utf8_character(value, &mut stdin)?;
                     self.insert_text(&character.to_string());
+                    self.selected_suggestion = None;
                     self.redraw()?;
                 }
                 _ => {}
@@ -218,35 +350,64 @@ impl Composer {
         self.cursor += text.len();
     }
 
+    fn remove_last_image(&mut self) {
+        if self.images.is_empty() {
+            self.notice = "No attached images to remove.".to_string();
+            return;
+        }
+
+        self.images.pop();
+        if self.images.is_empty() {
+            self.notice = "Removed all attached images.".to_string();
+        } else {
+            self.notice = format!("Removed last image. {} remaining.", self.images.len());
+        }
+    }
+
     fn redraw(&self) -> io::Result<()> {
         let box_width = get_terminal_width();
         let content_width = box_width - 4;
-        
+
         let mut lines = Vec::new();
         lines.push(String::new());
-        lines.push(format!("  \x1b[1;38;2;120;138;62m ___   ___ _____ ___ _  _  ___ ___ _  _ ___ \x1b[0m"));
-        lines.push(format!("  \x1b[1;38;2;120;138;62m|   \\ / _ \\_   _| __| \\| |/ __|_ _| \\| | __|\x1b[0m"));
-        lines.push(format!("  \x1b[1;38;2;120;138;62m| |) | (_) || | | _|| .` | (_ || || .` | _| \x1b[0m"));
-        lines.push(format!("  \x1b[1;38;2;120;138;62m|___/ \\___/ |_| |___|_|\\_|\\___|___|_|\\_|___|\x1b[0m"));
+        lines.push("  \x1b[1;38;2;120;138;62m ___   ___ _____ ___ _  _  ___ ___ _  _ ___ \x1b[0m".to_string());
+        lines.push("  \x1b[1;38;2;120;138;62m|   \\ / _ \\_   _| __| \\| |/ __|_ _| \\| | __|\x1b[0m".to_string());
+        lines.push("  \x1b[1;38;2;120;138;62m| |) | (_) || | | _|| .` | (_ || || .` | _| \x1b[0m".to_string());
+        lines.push("  \x1b[1;38;2;120;138;62m|___/ \\___/ |_| |___|_|\\_|\\___|___|_|\\_|___|\x1b[0m".to_string());
         lines.push(String::new());
-        lines.push(format!("  \x1b[38;2;85;102;40mVersion  :: v{}\x1b[0m", self.version));
-        lines.push(format!("  \x1b[38;2;85;102;40mProvider :: {}\x1b[0m", self.provider));
+        lines.push(format!(
+            "  \x1b[38;2;85;102;40mVersion  :: v{}\x1b[0m",
+            self.version
+        ));
+        lines.push(format!(
+            "  \x1b[38;2;85;102;40mProvider :: {}\x1b[0m",
+            self.provider
+        ));
         lines.push(String::new());
-        lines.push(format!("  \x1b[1;38;2;120;138;62mDescribe your design\x1b[0m"));
+        lines.push("  \x1b[1;38;2;120;138;62mDescribe your design\x1b[0m".to_string());
         lines.push(heading(&make_top_border(box_width)));
-        
+
         let plain_text = if self.text.is_empty() {
-            "> _ Ask Dotengine to style your desktop...".to_string()
+            if self.images.is_empty() {
+                "> _ Ask Dotengine to style your desktop...".to_string()
+            } else {
+                "> _ Paste a screenshot or describe the setup...".to_string()
+            }
         } else {
             let mut display = self.text.clone();
             display.insert(self.cursor, '_');
             format!("> {}", display)
         };
-        
+
         for line in wrap_text(&plain_text, content_width) {
-            lines.push(input_row_styled(&line, box_width, true, self.text.is_empty()));
+            lines.push(input_row_styled(
+                &line,
+                box_width,
+                true,
+                self.text.is_empty(),
+            ));
         }
-        
+
         if !self.images.is_empty() {
             lines.push(input_row_styled("", box_width, false, false));
             lines.push(input_row_styled(
@@ -262,14 +423,21 @@ impl Composer {
                 false,
             ));
         }
+
+        if self.text.starts_with('/') {
+            let matches = get_matching_commands(&self.text);
+            if !matches.is_empty() {
+                lines.push(heading(&make_divider(box_width)));
+                lines.push(input_row_styled("  Suggestions:", box_width, false, false));
+                for (i, (cmd, desc)) in matches.iter().enumerate() {
+                    let is_selected = self.selected_suggestion == Some(i);
+                    lines.push(suggestion_row(cmd, desc, box_width, is_selected));
+                }
+            }
+        }
+
         lines.push(heading(&make_bottom_border(box_width)));
-        lines.push(format!(
-            "  {} send    {} attach image    {} remove image    {} clear prompt",
-            accent("Enter"),
-            accent("Ctrl+V"),
-            accent("Ctrl+R"),
-            accent("Ctrl+U")
-        ));
+        lines.push(shortcut_footer());
         if !self.notice.is_empty() {
             lines.push(format!("  {} {}", accent("Note"), self.notice));
         }
@@ -319,7 +487,7 @@ fn image_from_clipboard() -> Result<ImagePayload, String> {
             .output()
         {
             if output.status.success() && !output.stdout.is_empty() {
-                return ImagePayload::from_bytes(&output.stdout);
+                return ImagePayload::from_reference_image_bytes(&output.stdout);
             }
         }
     }
@@ -414,6 +582,17 @@ fn get_terminal_width() -> usize {
     84
 }
 
+fn shortcut_footer() -> String {
+    format!(
+        "  {} send    {} attach image    {} remove last image    {} clear    {} commands",
+        accent("Enter"),
+        accent("Ctrl+V"),
+        accent("Ctrl+R"),
+        accent("Ctrl+U"),
+        accent("/help")
+    )
+}
+
 fn make_top_border(width: usize) -> String {
     let dashes = "─".repeat(width - 2);
     format!("┌{}┐", dashes)
@@ -422,6 +601,66 @@ fn make_top_border(width: usize) -> String {
 fn make_bottom_border(width: usize) -> String {
     let dashes = "─".repeat(width - 2);
     format!("└{}┘", dashes)
+}
+
+fn make_divider(width: usize) -> String {
+    let dashes = "─".repeat(width - 2);
+    format!("├{}┤", dashes)
+}
+
+fn get_matching_commands(input: &str) -> Vec<(&'static str, &'static str)> {
+    let commands = vec![
+        ("/help", "Show composer help and shortcuts"),
+        ("/provider", "Change preferred default AI provider"),
+        ("/change-key", "Update API key for active provider"),
+    ];
+    if input == "/" {
+        commands
+    } else {
+        commands
+            .into_iter()
+            .filter(|(cmd, _)| cmd.starts_with(input))
+            .collect()
+    }
+}
+
+fn suggestion_row(cmd: &str, desc: &str, box_width: usize, is_selected: bool) -> String {
+    let content_width = box_width - 4;
+
+    let prefix = if is_selected { "  ▶ " } else { "  • " };
+    let middle = " :: ";
+    let cmd_padded = format!("{:<12}", cmd);
+    let visual_text = format!("{}{}{}{}", prefix, cmd_padded, middle, desc);
+
+    let visible_chars: Vec<char> = visual_text.chars().take(content_width).collect();
+    let visible_len = visible_chars.len();
+    let padding_needed = content_width.saturating_sub(visible_len);
+
+    let final_padded = if visible_len >= 16 {
+        let cmd_padded_colored = if is_selected {
+            format!("\x1b[1;38;2;166;227;161m{:<12}\x1b[0m", cmd)
+        } else {
+            format!("\x1b[1;38;2;120;138;62m{:<12}\x1b[0m", cmd)
+        };
+        let desc_part: String = visible_chars[16..].iter().collect();
+        let styled_desc = if is_selected {
+            format!("\x1b[1;37m{}\x1b[0m", desc_part)
+        } else {
+            desc_part
+        };
+        let styled_prefix = if is_selected {
+            "\x1b[1;38;2;166;227;161m  ▶ \x1b[0m"
+        } else {
+            "  • "
+        };
+        format!("{}{}{}{}", styled_prefix, cmd_padded_colored, styled_desc, " ".repeat(padding_needed))
+    } else {
+        let visible_str: String = visible_chars.iter().collect();
+        format!("{}{}", visible_str, " ".repeat(padding_needed))
+    };
+
+    let border = "\x1b[38;2;120;138;62m│\x1b[0m";
+    format!("{} {} {}", border, final_padded, border)
 }
 
 #[allow(dead_code)]
@@ -449,10 +688,7 @@ fn input_row_styled(
                     &padded_content[2..]
                 );
             } else {
-                padded_content = format!(
-                    "\x1b[38;2;120;138;62m>\x1b[0m {}",
-                    &padded_content[2..]
-                );
+                padded_content = format!("\x1b[38;2;120;138;62m>\x1b[0m {}", &padded_content[2..]);
             }
         } else if is_empty {
             padded_content = format!("\x1b[38;2;85;102;40m{}\x1b[0m", padded_content);
@@ -465,7 +701,10 @@ fn input_row_styled(
 
 #[cfg(test)]
 mod tests {
-    use super::{input_row, wrap_text, make_bottom_border, make_top_border};
+    use super::{
+        input_row, make_bottom_border, make_top_border, shortcut_footer, wrap_text, Composer,
+    };
+    use crate::domain::ImagePayload;
 
     #[test]
     fn wraps_composer_input_to_box_width() {
@@ -480,12 +719,129 @@ mod tests {
         let bottom = make_bottom_border(box_width);
         assert_eq!(top.chars().count(), box_width);
         assert_eq!(bottom.chars().count(), box_width);
-        assert_eq!(input_row("[ img1 ] [ img2 ]", box_width).chars().count(), box_width);
+        assert_eq!(
+            input_row("[ img1 ] [ img2 ]", box_width).chars().count(),
+            box_width
+        );
         assert_eq!(
             input_row("Ask Dotengine to style your desktop...", box_width)
                 .chars()
                 .count(),
             box_width
         );
+    }
+
+    #[test]
+    fn shortcut_footer_highlights_keys_and_includes_image_removal() {
+        let footer = shortcut_footer();
+
+        assert!(footer.contains("\x1b["));
+        assert!(footer.contains("Enter"));
+        assert!(footer.contains("Ctrl+V"));
+        assert!(footer.contains("Ctrl+R"));
+        assert!(footer.contains("remove last image"));
+        assert!(footer.contains("Ctrl+U"));
+    }
+
+    #[test]
+    fn ctrl_r_action_removes_last_attached_image() {
+        let png = ImagePayload::from_bytes(b"\x89PNG\r\n\x1a\nfirst").unwrap();
+        let jpeg = ImagePayload::from_bytes(&[0xff, 0xd8, 0xff, 0xe0]).unwrap();
+        let mut composer = Composer::new(
+            String::new(),
+            vec![png, jpeg],
+            "test".to_string(),
+            "Gemini".to_string(),
+        );
+
+        composer.remove_last_image();
+
+        assert_eq!(composer.images.len(), 1);
+        assert_eq!(composer.images[0].media_type, "image/png");
+        assert_eq!(composer.notice, "Removed last image. 1 remaining.");
+    }
+
+    #[test]
+    fn ctrl_r_action_reports_when_no_images_are_attached() {
+        let mut composer = Composer::new(
+            String::new(),
+            Vec::new(),
+            "test".to_string(),
+            "Gemini".to_string(),
+        );
+
+        composer.remove_last_image();
+
+        assert!(composer.images.is_empty());
+        assert_eq!(composer.notice, "No attached images to remove.");
+    }
+
+    #[test]
+    fn test_get_matching_commands() {
+        use super::get_matching_commands;
+        let all = get_matching_commands("/");
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, "/help");
+        assert_eq!(all[1].0, "/provider");
+        assert_eq!(all[2].0, "/change-key");
+
+        let h = get_matching_commands("/h");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].0, "/help");
+
+        let c = get_matching_commands("/c");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, "/change-key");
+
+        let none = get_matching_commands("/invalid");
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn test_suggestion_row_formatting() {
+        use super::suggestion_row;
+        let box_width = 80;
+        
+        // Test non-selected suggestion row formatting
+        let row = suggestion_row("/help", "Test description", box_width, false);
+        let mut plain = String::new();
+        let mut in_escape = false;
+        for c in row.chars() {
+            if c == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if c == 'm' {
+                    in_escape = false;
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        assert_eq!(plain.chars().count(), box_width);
+        assert!(row.contains("│"));
+        assert!(row.contains("/help"));
+        assert!(row.contains("Test description"));
+        assert!(row.contains("•"));
+
+        // Test selected suggestion row formatting
+        let row_sel = suggestion_row("/help", "Test description", box_width, true);
+        let mut plain_sel = String::new();
+        let mut in_escape_sel = false;
+        for c in row_sel.chars() {
+            if c == '\x1b' {
+                in_escape_sel = true;
+            } else if in_escape_sel {
+                if c == 'm' {
+                    in_escape_sel = false;
+                }
+            } else {
+                plain_sel.push(c);
+            }
+        }
+        assert_eq!(plain_sel.chars().count(), box_width);
+        assert!(row_sel.contains("│"));
+        assert!(row_sel.contains("/help"));
+        assert!(row_sel.contains("Test description"));
+        assert!(row_sel.contains("▶"));
     }
 }

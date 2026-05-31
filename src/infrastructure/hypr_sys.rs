@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{copy, create_dir_all, metadata, read_to_string, write};
 use tokio::process::Command;
 
@@ -139,6 +139,12 @@ pub struct HyprSys {
     home_dir: PathBuf,
 }
 
+impl Default for HyprSys {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HyprSys {
     pub fn new() -> Self {
         let home_dir = std::env::var("HOME")
@@ -146,6 +152,59 @@ impl HyprSys {
             .unwrap_or_else(|_| PathBuf::from("/home/aryan"));
         Self { home_dir }
     }
+
+    pub async fn download_wallpaper(
+        &self,
+        query: &str,
+        target_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        println!("{} Querying Wallhaven API for: '{}'...", crate::ui::accent("Dotengine"), query);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("dotengine-rice/1.0")
+            .build()?;
+
+        let res = client
+            .get("https://wallhaven.cc/api/v1/search")
+            .query(&[("q", query), ("sorting", "relevance")])
+            .send()
+            .await?;
+
+        if !res.status().is_success() {
+            return Err(format!("Wallhaven search API returned status {}", res.status()).into());
+        }
+
+        let body: serde_json::Value = res.json().await?;
+        let data = body.get("data")
+            .and_then(|v| v.as_array())
+            .ok_or("Invalid Wallhaven API response format")?;
+
+        if data.is_empty() {
+            return Err("No matching wallpaper found on Wallhaven".into());
+        }
+
+        let direct_url = data[0].get("path")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing path field in Wallhaven search results")?;
+
+        println!("{} Downloading high-resolution wallpaper from: {}...", crate::ui::accent("Dotengine"), direct_url);
+
+        let img_res = client.get(direct_url).send().await?;
+        if !img_res.status().is_success() {
+            return Err(format!("Failed to download image from direct URL, status {}", img_res.status()).into());
+        }
+
+        let bytes = img_res.bytes().await?;
+
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(target_path, &bytes)?;
+        Ok(())
+    }
+
 
     async fn detect_distribution(&self) -> LinuxDistribution {
         for path in ["/etc/os-release", "/usr/lib/os-release"] {
@@ -189,8 +248,14 @@ impl HyprSys {
 
     fn parse_version_parts(version: &str) -> (u32, u32) {
         let mut parts = version.split('.');
-        let major = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
-        let minor = parts.next().and_then(|part| part.parse::<u32>().ok()).unwrap_or(0);
+        let major = parts
+            .next()
+            .and_then(|part| part.parse::<u32>().ok())
+            .unwrap_or(0);
+        let minor = parts
+            .next()
+            .and_then(|part| part.parse::<u32>().ok())
+            .unwrap_or(0);
         (major, minor)
     }
 
@@ -271,7 +336,40 @@ impl HyprSys {
 
         matches!(
             normal_component(components[1]),
-            Some("hypr" | "waybar" | "rofi" | "dunst" | "ags" | "quickshell" | "quick-shell" | "hyprlock" | "swaylock" | "waylock" | "swaync")
+            Some(
+                "hypr"
+                    | "waybar"
+                    | "rofi"
+                    | "dunst"
+                    | "ags"
+                    | "quickshell"
+                    | "quick-shell"
+                    | "hypridle"
+                    | "hyprlauncher"
+                    | "hyprpicker"
+                    | "hyprsunset"
+                    | "hyprpolkitagent"
+                    | "hyprsysteminfo"
+                    | "hyprpwcenter"
+                    | "hyprshutdown"
+                    | "hyprtoolkit"
+                    | "hyprland-guiutils"
+                    | "hyprlock"
+                    | "swaylock"
+                    | "waylock"
+                    | "swaync"
+                    | "kitty"
+                    | "foot"
+                    | "alacritty"
+                    | "wezterm"
+                    | "ghostty"
+                    | "fastfetch"
+                    | "neofetch"
+                    | "btop"
+                    | "cava"
+                    | "wlogout"
+                    | "wofi"
+            )
         ) && components[2..]
             .iter()
             .all(|component| normal_component(*component).is_some())
@@ -281,7 +379,7 @@ impl HyprSys {
     fn validate_path_safety(&self, relative_path: &Path) -> Result<PathBuf, String> {
         if !Self::is_supported_config_path(relative_path) {
             return Err(format!(
-                "Refusing unsupported config destination '{}'. Allowed roots: .config/hypr, .config/waybar, .config/rofi, .config/dunst, .config/ags, .config/quickshell, .config/quick-shell, .config/hyprlock, .config/swaylock, .config/waylock, .config/swaync",
+                "Refusing unsupported config destination '{}'. Allowed roots: .config/hypr, .config/waybar, .config/rofi, .config/dunst, .config/ags, .config/quickshell, .config/quick-shell, .config/hypridle, .config/hyprlauncher, .config/hyprpicker, .config/hyprsunset, .config/hyprpolkitagent, .config/hyprsysteminfo, .config/hyprpwcenter, .config/hyprshutdown, .config/hyprtoolkit, .config/hyprland-guiutils, .config/hyprlock, .config/swaylock, .config/waylock, .config/swaync, .config/kitty, .config/foot, .config/alacritty, .config/wezterm, .config/ghostty, .config/fastfetch, .config/neofetch, .config/btop, .config/cava, .config/wlogout, .config/wofi",
                 relative_path.display()
             ));
         }
@@ -401,6 +499,61 @@ impl HyprSys {
             false
         }
     }
+
+    fn resolve_install_package_name(package_name: &str, package_manager: PackageManager) -> String {
+        match package_name {
+            "fonts-font-awesome" => match package_manager {
+                PackageManager::Pacman | PackageManager::Paru | PackageManager::Yay => {
+                    "otf-font-awesome".to_string()
+                }
+                PackageManager::Apt => "fonts-font-awesome".to_string(),
+                PackageManager::Dnf | PackageManager::Yum => "fontawesome-fonts".to_string(),
+                _ => "fonts-font-awesome".to_string(),
+            },
+            "ags" => match package_manager {
+                PackageManager::Pacman | PackageManager::Paru | PackageManager::Yay => {
+                    "aylurs-gtk-shell".to_string()
+                }
+                _ => "ags".to_string(),
+            },
+            "swaync" => match package_manager {
+                PackageManager::Apt => "sway-notification-center".to_string(),
+                PackageManager::Dnf | PackageManager::Yum => "SwayNotificationCenter".to_string(),
+                _ => "swaync".to_string(),
+            },
+            "network-manager-applet" => match package_manager {
+                PackageManager::Apt => "network-manager-gnome".to_string(),
+                _ => "network-manager-applet".to_string(),
+            },
+            other => other.to_string(),
+        }
+    }
+
+    async fn launch_if_configured(binary: &str, token: &str, configs: &[ConfigFile]) {
+        let running = Command::new("pgrep")
+            .arg(binary)
+            .status()
+            .await
+            .is_ok_and(|s| s.success());
+        if running {
+            return;
+        }
+
+        let wants_launch = configs.iter().any(|config| {
+            config.relative_path.to_string_lossy().contains(token) || config.content.contains(token)
+        });
+        if wants_launch {
+            println!(
+                "{} {} is not running. Launching in background...",
+                accent("Dotengine"),
+                binary
+            );
+            let _ = Command::new(binary)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
 }
 
 #[async_trait]
@@ -421,7 +574,7 @@ impl SystemManager for HyprSys {
         // Identify active monitors by calling hyprctl monitors -j
         let mut monitors = Vec::new();
         let hyprctl_output = Command::new("hyprctl")
-            .args(&["monitors", "-j"])
+            .args(["monitors", "-j"])
             .output()
             .await;
 
@@ -470,13 +623,24 @@ impl SystemManager for HyprSys {
             "dunst",
             "waybar",
             "hyprpaper",
+            "hypridle",
+            "hyprpicker",
+            "hyprlauncher",
+            "hyprsunset",
+            "hyprpolkitagent",
+            "hyprsysteminfo",
+            "hyprpwcenter",
+            "hyprshutdown",
+            "xdg-desktop-portal-hyprland",
             "kitty",
             "foot",
             "quick-shell",
             "hyprlock",
             "swaylock",
             "waylock",
+            "wlogout",
         ] {
+
             let installed = self.check_command_installed(tool).await;
             package_status.insert(tool.to_string(), installed);
         }
@@ -545,23 +709,10 @@ impl SystemManager for HyprSys {
         let choice = input.trim().to_lowercase();
 
         if choice == "y" || choice == "yes" {
-            let translated_package = if package_name == "fonts-font-awesome" {
-                match package_manager {
-                    PackageManager::Pacman | PackageManager::Paru | PackageManager::Yay => "otf-font-awesome",
-                    PackageManager::Apt => "fonts-font-awesome",
-                    PackageManager::Dnf | PackageManager::Yum => "fontawesome-fonts",
-                    _ => "fonts-font-awesome",
-                }
-            } else if package_name == "ags" {
-                match package_manager {
-                    PackageManager::Pacman | PackageManager::Paru | PackageManager::Yay => "aylurs-gtk-shell",
-                    _ => "ags",
-                }
-            } else {
-                package_name
-            };
+            let translated_package =
+                Self::resolve_install_package_name(package_name, package_manager);
 
-            let (program, args) = package_manager.installation_command(translated_package);
+            let (program, args) = package_manager.installation_command(&translated_package);
             let mut cmd = Command::new(program);
             cmd.args(args);
 
@@ -650,7 +801,14 @@ impl SystemManager for HyprSys {
             create_dir_all(parent).await?;
         }
 
-        write(&safe_path, &file.content).await?;
+        let content = if file.relative_path.to_string_lossy().contains("hyprpaper.conf") {
+            file.content.replace("~", &self.home_dir.to_string_lossy())
+        } else {
+            file.content.clone()
+        };
+
+        write(&safe_path, &content).await?;
+
         Ok(())
     }
 
@@ -663,7 +821,121 @@ impl SystemManager for HyprSys {
         Ok(content)
     }
 
-    async fn verify_and_reload(&self, configs: &[ConfigFile]) -> Result<(), ErrorPayload> {
+    async fn verify_and_reload(&self, configs: &[ConfigFile], wallpaper_query: Option<&str>) -> Result<(), ErrorPayload> {
+        let mut wallpaper_path_str = None;
+        // === AUTOMATIC WALLPAPER GENERATION AND PROVISIONING ===
+        if let Some(hyprpaper_conf) = configs.iter().find(|c| c.relative_path.to_string_lossy().contains("hyprpaper.conf")) {
+            for line in hyprpaper_conf.content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("preload") {
+                    if let Some((_, path_val)) = trimmed.split_once('=') {
+                        let raw_path = path_val.trim();
+                        let stripped = raw_path.trim_matches(|c| c == '"' || c == '\'');
+                        wallpaper_path_str = Some(stripped.replace("~", self.home_dir.to_string_lossy().as_ref()));
+                        break;
+                    }
+                }
+            }
+
+            if let Some(ref path_str) = wallpaper_path_str {
+                let path = PathBuf::from(path_str);
+                if path.starts_with(&self.home_dir) && !path.exists() {
+                    let mut downloaded_successfully = false;
+                    if let Some(query) = wallpaper_query {
+                        if !query.trim().is_empty() {
+                            match self.download_wallpaper(query, &path).await {
+                                Ok(_) => {
+                                    println!("{} Reference design wallpaper successfully fetched and applied.", crate::ui::accent("Dotengine"));
+                                    downloaded_successfully = true;
+                                }
+                                Err(e) => {
+                                    println!("{} Failed to fetch reference wallpaper: {}. Falling back to gradient generator.", crate::ui::warning("Dotengine"), e);
+                                }
+                            }
+                        }
+                    }
+
+                    if !downloaded_successfully {
+                        println!("{} Wallpaper file is missing at '{}'. Generating matching aesthetic background...", crate::ui::accent("Dotengine"), path.display());
+
+                    let mut colors = Vec::new();
+                    for c in configs {
+                        let mut i = 0;
+                        let bytes = c.content.as_bytes();
+                        while i + 6 < bytes.len() {
+                            if bytes[i] == b'#' {
+                                let mut is_hex = true;
+                                let mut hex_str = String::new();
+                                for j in 1..=6 {
+                                    let ch = bytes[i + j] as char;
+                                    if ch.is_ascii_hexdigit() {
+                                        hex_str.push(ch);
+                                    } else {
+                                        is_hex = false;
+                                        break;
+                                    }
+                                }
+                                if is_hex {
+                                    colors.push(hex_str);
+                                }
+                                i += 6;
+                            }
+                            i += 1;
+                        }
+                    }
+
+                    let hex_to_rgb = |hex: &str| -> Option<[u8; 3]> {
+                        if hex.len() != 6 {
+                            return None;
+                        }
+                        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                        Some([r, g, b])
+                    };
+
+                    let mut rgb_colors: Vec<[u8; 3]> = colors.iter()
+                        .filter_map(|hex| hex_to_rgb(hex))
+                        .collect();
+
+                    rgb_colors.sort_by_key(|rgb| {
+                        (0.2126 * rgb[0] as f32 + 0.7152 * rgb[1] as f32 + 0.0722 * rgb[2] as f32) as u32
+                    });
+                    rgb_colors.dedup();
+
+                    let (color1, color2) = if rgb_colors.len() >= 2 {
+                        (rgb_colors[0], *rgb_colors.last().unwrap())
+                    } else if rgb_colors.len() == 1 {
+                        ([30, 30, 46], rgb_colors[0])
+                    } else {
+                        ([30, 30, 46], [137, 180, 250])
+                    };
+
+                    let width = 1920;
+                    let height = 1080;
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    let mut img: image::RgbImage = image::ImageBuffer::new(width, height);
+                    for (x, y, pixel) in img.enumerate_pixels_mut() {
+                        let t = (x as f32 / width as f32 + y as f32 / height as f32) / 2.0;
+                        let r = ((1.0 - t) * color1[0] as f32 + t * color2[0] as f32) as u8;
+                        let g = ((1.0 - t) * color1[1] as f32 + t * color2[1] as f32) as u8;
+                        let b = ((1.0 - t) * color1[2] as f32 + t * color2[2] as f32) as u8;
+                        *pixel = image::Rgb([r, g, b]);
+                    }
+
+                    if let Err(e) = img.save(&path) {
+                        println!("{} Failed to save generated wallpaper: {}", crate::ui::warning("Dotengine"), e);
+                    } else {
+                        println!("{} Bespoke wallpaper successfully generated.", crate::ui::accent("Dotengine"));
+                    }
+                    }
+                }
+            }
+        }
+
         // Execute hyprctl reload to apply Hyprland config files
         let output = Command::new("hyprctl").arg("reload").output().await;
 
@@ -697,32 +969,97 @@ impl SystemManager for HyprSys {
                     }
                 }
 
-                // === SERVICE DAEMONIZATION ===
-                // If Waybar was configured but isn't running, start it in the background
-                let waybar_running = Command::new("pgrep").arg("waybar").status().await.is_ok_and(|s| s.success());
-                if !waybar_running {
-                    let has_waybar = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("waybar"));
-                    if has_waybar {
-                        println!("{} Waybar is not running. Launching in background...", accent("Dotengine"));
-                        let _ = Command::new("waybar")
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .spawn();
+                // === DYNAMIC SERVICE RESTART & MUTUAL EXCLUSION ===
+                let has_waybar = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("waybar"));
+                let has_ags = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("ags"));
+                let has_dunst = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("dunst"));
+                let has_swaync = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("swaync"));
+                let has_hyprpaper = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("hyprpaper"));
+                let has_hypridle = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("hypridle"));
+
+                // 1. Manage Panel Transition / Reload
+                if has_waybar {
+                    // Try smooth reload with SIGUSR2 first to avoid destroying tray icons
+                    let reload_status = Command::new("pkill")
+                        .args(["-USR2", "waybar"])
+                        .status()
+                        .await;
+                    if reload_status.is_ok_and(|s| s.success()) {
+                        println!("{} Seamlessly reloaded Waybar config via SIGUSR2.", accent("Dotengine"));
+                        let _ = Command::new("pkill").arg("ags").status().await;
+                    } else {
+                        println!("{} Restarting Waybar panel to apply new configuration...", accent("Dotengine"));
+                        let _ = Command::new("pkill").arg("waybar").status().await;
+                        let _ = Command::new("pkill").arg("ags").status().await;
+                        let _ = Command::new("waybar").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                     }
+                } else if has_ags {
+                    println!("{} Restarting AGS shell to apply new configuration...", accent("Dotengine"));
+                    let _ = Command::new("pkill").arg("ags").status().await;
+                    let _ = Command::new("pkill").arg("waybar").status().await;
+                    let _ = Command::new("ags").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                 }
 
-                // If Dunst was configured but isn't running, start it in the background
-                let dunst_running = Command::new("pgrep").arg("dunst").status().await.is_ok_and(|s| s.success());
-                if !dunst_running {
-                    let has_dunst = configs.iter().any(|c| c.relative_path.to_string_lossy().contains("dunst"));
-                    if has_dunst {
-                        println!("{} Dunst is not running. Launching in background...", accent("Dotengine"));
-                        let _ = Command::new("dunst")
+                // 2. Manage Notification Center Transition / Reload
+                if has_dunst {
+                    println!("{} Restarting Dunst notification center to apply new configuration...", accent("Dotengine"));
+                    let _ = Command::new("pkill").arg("dunst").status().await;
+                    let _ = Command::new("pkill").arg("swaync").status().await;
+                    let _ = Command::new("dunst").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                } else if has_swaync {
+                    println!("{} Restarting SwayNC notification center to apply new configuration...", accent("Dotengine"));
+                    let _ = Command::new("pkill").arg("swaync").status().await;
+                    let _ = Command::new("pkill").arg("dunst").status().await;
+                    let _ = Command::new("swaync").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                }
+
+                // 3. Manage Wallpaper & Idle Transition
+                if has_hyprpaper {
+                    let mut smooth_reload_success = false;
+                    if let Some(ref path_str) = wallpaper_path_str {
+                        // Preload the wallpaper
+                        let preload_status = Command::new("hyprctl")
+                            .args(["hyprpaper", "preload", path_str])
                             .stdout(Stdio::null())
                             .stderr(Stdio::null())
-                            .spawn();
+                            .status()
+                            .await;
+                        if preload_status.is_ok_and(|s| s.success()) {
+                            // Apply wallpaper to all monitors
+                            let apply_status = Command::new("hyprctl")
+                                .args(["hyprpaper", "wallpaper", &format!(",{}", path_str)])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .status()
+                                .await;
+                            if apply_status.is_ok_and(|s| s.success()) {
+                                println!("{} Seamlessly applied new wallpaper via hyprctl IPC.", accent("Dotengine"));
+                                smooth_reload_success = true;
+                            }
+                        }
+                    }
+
+                    if !smooth_reload_success {
+                        println!("{} Restarting Hyprpaper to apply new wallpaper...", accent("Dotengine"));
+                        let _ = Command::new("pkill").arg("hyprpaper").status().await;
+                        let _ = Command::new("hyprpaper").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                     }
                 }
+                if has_hypridle {
+                    println!("{} Restarting Hypridle daemon...", accent("Dotengine"));
+                    let _ = Command::new("pkill").arg("hypridle").status().await;
+                    let _ = Command::new("hypridle").stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+                }
+
+                // For any other daemons not in active configs, keep standard fallback checks
+                if !has_hyprpaper {
+                    Self::launch_if_configured("hyprpaper", "hyprpaper", configs).await;
+                }
+                if !has_hypridle {
+                    Self::launch_if_configured("hypridle", "hypridle", configs).await;
+                }
+                Self::launch_if_configured("hyprpolkitagent", "hyprpolkitagent", configs).await;
+                Self::launch_if_configured("hyprsunset", "hyprsunset", configs).await;
 
                 Ok(())
             }
@@ -813,12 +1150,31 @@ mod tests {
     }
 
     #[test]
+    fn resolves_component_packages_for_distribution_variants() {
+        assert_eq!(
+            HyprSys::resolve_install_package_name("ags", PackageManager::Pacman),
+            "aylurs-gtk-shell".to_string()
+        );
+        assert_eq!(
+            HyprSys::resolve_install_package_name("hyprpaper", PackageManager::Apt),
+            "hyprpaper".to_string()
+        );
+        assert_eq!(
+            HyprSys::resolve_install_package_name("fonts-font-awesome", PackageManager::Dnf),
+            "fontawesome-fonts".to_string()
+        );
+    }
+
+    #[test]
     fn only_accepts_supported_desktop_config_destinations() {
         assert!(HyprSys::is_supported_config_path(
             PathBuf::from(".config/hypr/hyprland.conf").as_path()
         ));
         assert!(HyprSys::is_supported_config_path(
             PathBuf::from(".config/waybar/style.css").as_path()
+        ));
+        assert!(HyprSys::is_supported_config_path(
+            PathBuf::from(".config/kitty/kitty.conf").as_path()
         ));
         assert!(!HyprSys::is_supported_config_path(
             PathBuf::from(".config/systemd/user/service").as_path()

@@ -1,99 +1,140 @@
-# Hyprland Distro-Aware Technical Configuration Syntax (skill.md)
+# Hyprland Syntax Skill
 
-This document defines the strict syntax requirements, dispatcher commands, and layout blocks for generating correct and warning-free Hyprland configurations based on system versioning.
+This document is the config-syntax reference for Dotengine. It should help the generator choose the correct Hyprland syntax family, avoid invalid keywords, and produce a setup that reloads cleanly.
 
----
+## 1. Version-Family Selection
 
-## 1. Version-Based File Hierarchy
+- Always match the emitted config format to the detected Hyprland family.
+- Newer Hyprland releases may use Lua-based configuration surfaces, while older releases use `hyprland.conf` and hyprlang syntax.
+- When version detection is uncertain, prefer the syntax family supported by the installed release rather than mixing styles.
+- Do not emit syntax from more than one family in the same file.
 
-*   **Hyprland v0.55.0 and above**:
-    *   Uses **Lua-based configurations**.
-    *   File must be saved as: `.config/hypr/hyprland.lua`
-    *   If `hyprland.lua` exists, Hyprland loads it directly. You can split configurations and load them using Lua's standard `require()` syntax.
-*   **Hyprland v0.54.0 and below** (e.g., v0.53.3 standard in Ubuntu 26.04 LTS):
-    *   Uses classic **Hyprlang configuration syntax**.
-    *   File must be saved as: `.config/hypr/hyprland.conf`
+## 2. Config File Layout
 
----
+- Keep Hyprland config in the canonical Hypr config directory.
+- Use one directive per line.
+- Group related blocks together:
+  - general
+  - monitors
+  - input
+  - decoration
+  - animations
+  - binds
+  - window rules
+  - layer rules
+  - startup
+- Treat app configs as separate files. Waybar, Rofi, SwayNC, Hyprlock, Hyprpaper, and similar tools do not belong inside the Hyprland config body.
 
-## 2. Unified Window Rules (Hyprland v0.53.0 and above)
+## 3. Core Syntax Rules
 
-*   **Keyword Deprecation**: The `windowrulev2` keyword is **completely deprecated and removed**. You MUST use the `windowrule` keyword for all rules.
-*   **Match Prefixes Required**: Every window matching filter (such as `class`, `title`, `tag`, `initialClass`, or `initialTitle`) must be explicitly prefixed with `match:`.
-*   **Explicit Flag Values**: Boolean flags (such as `float`, `center`, `pin`, `fullscreen`) now require an explicit integer value (`1` for true/enable, `0` for false/disable).
-*   **Old vs. New Syntax Examples**:
-    *   *Incorrect (Deprecated):* `windowrulev2 = float, class:^(kitty)$`
-    *   *Correct (Modern):* `windowrule = float 1, match:class ^(kitty)$`
-    *   *Incorrect (Deprecated):* `windowrulev2 = opacity 0.95, class:^(vscode)$`
-    *   *Correct (Modern):* `windowrule = opacity 0.95, match:class ^(vscode)$`
+- Follow the documented block structure for the detected version.
+- Use explicit values for booleans and numeric settings.
+- Prefer documented keys only; avoid inventing field names from UI assumptions.
+- When in doubt, keep the generated config conservative and reload-safe.
 
----
+## 4. Variables, Keywords, and Layout Surface
 
-## 3. Decoration Effects & Shadow Blocks (Hyprland v0.42.0 and above)
+- Use the variables page as the source of truth for toggles and numeric options.
+- Common families to reason about:
+  - monitors
+  - input
+  - decoration
+  - animations
+  - group settings
+  - misc behavior
+  - bind-related options
+  - OpenGL / XWayland / debug knobs when relevant
+- Keep monitor placement and scaling explicit.
+- Keep input behavior explicit for keyboard, touchpad, and pointer comfort.
 
-*   **Shadow Sub-Block Required**: Defining shadow properties (like `drop_shadow`, `shadow_range`, `col.shadow`) directly within the `decoration` block is **deprecated and triggers configuration errors**.
-*   **Blur Sub-Block Required**: Defining blur properties (like `blur = true`, `blur_size = 8`, `blur_passes = 3`) directly within the `decoration` block is **deprecated and causes syntax load/reload errors**. Colons like `decoration:blur` are also invalid. All blur properties **MUST** be defined in a nested `blur { ... }` sub-block.
-*   **Structured Format**: All shadow and blur parameters must be encapsulated in their respective nested blocks inside `decoration`.
-*   **Old vs. New Syntax Examples**:
-    *   *Incorrect (Deprecated / Invalid Syntax):*
-        ```ini
-        decoration {
-            rounding = 14
-            blur = true
-            blur_size = 8
-            drop_shadow = true
-            shadow_range = 20
-        }
-        ```
-    *   *Correct (Modern / Required Syntax):*
-        ```ini
-        decoration {
-            rounding = 14
-            active_opacity = 0.95
-            inactive_opacity = 0.90
-            
-            blur {
-                enabled = true
-                size = 8
-                passes = 3
-                new_optimizations = true
-            }
-            
-            shadow {
-                enabled = true
-                range = 20
-                render_power = 4
-                color = rgba(11111bee)
-            }
-        }
-        ```
+## 5. Binds and Dispatchers
 
----
+- Use the documented bind syntax for the detected family.
+- Prefer common dispatchers when building keymaps:
+  - `exec`
+  - `killactive`
+  - `togglefloating`
+  - `fullscreen`
+  - `movefocus`
+  - `workspace`
+  - `movetoworkspace`
+  - `togglespecialworkspace`
+  - `resizeactive`
+- Use `pass` or `sendshortcut` only when a global shortcut flow is actually needed.
+- Do not substitute made-up dispatcher names for convenience.
+- Keep launcher, screenshot, and window management binds consistent with the rest of the desktop.
 
-## 4. Modern Layer Rules (layerrule) Syntax (Hyprland v0.53.0 and above)
+## 6. Startup and Session Wiring
 
-*   **Explicit Match Prefix Required**: Positional comma-separated layer rules (e.g. `layerrule = blur, waybar`) are **completely deprecated and trigger syntax errors** (e.g. `invalid field blur: missing a value`). You MUST explicitly prefix the layer namespace with `match:namespace`.
-*   **Explicit Flag Values & Replaced Fields**: 
-    *   `blur` requires an explicit value (like `on`).
-    *   `ignorezero` has been **completely removed** and must be replaced with `ignore_alpha 0` (note the underscore).
-*   **Correct Syntax Examples**:
-    *   *Incorrect (Deprecated / Syntax Error):*
-        ```ini
-        layerrule = blur, waybar
-        layerrule = ignorezero, waybar
-        ```
-    *   *Correct (Modern / Required Syntax):*
-        ```ini
-        layerrule = blur on, match:namespace ^(waybar)$
-        layerrule = ignore_alpha 0, match:namespace ^(waybar)$
-        ```
+- Use `exec-once` for idempotent session daemons:
+  - panel or shell
+  - wallpaper daemon
+  - idle manager
+  - lock helper
+  - tray applets
+  - polkit agent
+  - notification daemon when needed
+- Do not declare companion shell configs in the Hyprland config.
+- When a component is selected, ensure the startup path is real:
+  - a config file exists
+  - an autostart line exists
+  - any required environment variables are set
+- Barebones setups should feel complete after login, not just installed.
 
----
+## 7. Monitors and Input
 
-## 5. Keybinding Dispatchers & Key Rules
+- Keep monitor definitions explicit and stable.
+- Prefer sensible defaults for:
+  - scale
+  - refresh rate
+  - workspace assignment
+  - gap sizing
+- Make input behavior match the chosen desktop style:
+  - tap behavior
+  - natural scrolling
+  - keyboard layout / repeat behavior
+  - touchpad palm and tap settings when relevant
 
-*   **Dispatcher for Floating**: To toggle a window between floating and tiling, you must use the **`togglefloating`** dispatcher. Never use `togglefloat` or `float` as a dispatcher.
-    *   *Incorrect:* `bind = SUPER, V, togglefloat`
-    *   *Correct:* `bind = SUPER, V, togglefloating`
-*   **Dispatcher for Closing Active Windows**: Always use **`killactive`** to close/terminate the active window.
-    *   *Correct:* `bind = SUPER, C, killactive`
+## 8. Animations and Decoration
+
+- Use rounded corners, blur, and shadows in a way that matches the chosen visual language.
+- Keep blur nested inside the proper decoration sub-blocks.
+- Keep shadows in their own nested block if the target syntax expects it.
+- Prefer restrained animation curves for polished rice setups.
+- Avoid writing old decoration fields directly if the detected family expects a newer structure.
+
+### Blur and Shadow Shape
+
+- If the target syntax uses nested decoration blocks, keep blur settings inside `blur { ... }`.
+- Do not place blur keys directly beside unrelated decoration keys when the version expects a nested block.
+- Keep shadow settings in the matching shadow block for the installed syntax family.
+- The generator should err on the side of explicit structure rather than abbreviated shorthand.
+
+## 9. Window Rules
+
+- Use the version-appropriate rule syntax.
+- Newer syntax families prefer explicit `windowrule` style declarations with match prefixes.
+- Older branches may still use the older window rule style for compatibility with that release family.
+- Prefer explicit match prefixes for window selectors when the current syntax expects them.
+- Keep rules focused:
+  - float specific apps
+  - center dialogs
+  - assign workspaces intentionally
+  - set opacity or rounding only where it improves the layout
+- Avoid deprecated rule variants when the installed Hyprland family no longer accepts them.
+
+## 10. Layer Rules
+
+- Treat layer rules as a separate syntax surface from window rules.
+- Use the modern namespace matching form when required by the version.
+- Prefer explicit rule values such as `blur on` or `ignore_alpha 0` when the release family expects them.
+- Keep blur and transparency rules explicit and reload-safe.
+
+## 11. Practical Generation Checklist
+
+- Choose the correct config family first.
+- Generate the minimal working Hyprland config for the requested stack.
+- Add startup wiring for every component that needs to launch.
+- Keep wallpaper, lockscreen, launcher, panel, and notification behavior consistent with the rest of the desktop.
+- Make edits additive when the user is refining an existing setup.
+- Never place non-Hyprland config syntax inside Hyprland blocks.

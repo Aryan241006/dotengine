@@ -1,8 +1,16 @@
-use crate::domain::{ConfigFile, ErrorPayload, SystemContext, UserPrompt};
+use crate::domain::{ConfigFile, DesignReferenceSpec, ErrorPayload, SystemContext, UserPrompt};
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait AiService: Send + Sync {
+    /// Extracts a structured design manifest from a reference screenshot or image set.
+    async fn analyze_design_reference(
+        &self,
+        prompt: &UserPrompt,
+        system_context: &SystemContext,
+        design_rules: &str,
+    ) -> Result<DesignReferenceSpec, Box<dyn std::error::Error + Send + Sync>>;
+
     /// Generates config files from natural language prompt, system properties, and visual design rules
     async fn generate_config(
         &self,

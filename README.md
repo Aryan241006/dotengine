@@ -49,6 +49,10 @@ You can choose between two primary AI providers directly from the CLI:
 ### Keys Setup
 On your first run, the CLI will interactively ask you to select your preferred provider and paste your API key. Keys are securely saved locally inside your secure config directory (`~/.config/dotengine/credentials.json`) and are encrypted/read silently on all subsequent runs.
 
+Alternatively, you can supply your API keys directly via environment variables to bypass prompting and credentials files:
+*   `GEMINI_API_KEY` for Gemini provider.
+*   `OPENAI_API_KEY` for OpenAI provider.
+
 ---
 
 ## ✨ Core Desktop Stack Support
@@ -103,7 +107,7 @@ If you prefer to compile the Rust binary from source:
 git clone https://github.com/Aryan241006/dotengine.git
 cd dotengine
 
-# Run the test suite (17 unit and integration tests passing)
+# Run the test suite (51 unit and integration tests passing)
 cargo test
 
 # Compile and run the CLI
